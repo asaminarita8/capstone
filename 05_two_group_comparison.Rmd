@@ -1,0 +1,1584 @@
+---
+title: "Demographic Transition and AI Attitudes: Complete Analysis with Full Controls"
+author: "Analysis"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: flatly
+    highlight: tango
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+# Global options for the entire document
+options(scipen=999)
+options(repos = c(CRAN = "https://cloud.r-project.org/"))
+
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 12,
+  fig.height = 8,
+  dpi = 300
+)
+
+# Create Figures&Tables directory if it doesn't exist
+if (!dir.exists("Figures&Tables")) {
+  dir.create("Figures&Tables", recursive = TRUE)
+}
+```
+
+```{r load_packages}
+# Load required packages with error handling
+packages <- c("haven", "stringr", "ggplot2", "lme4", "ordinal", "sjPlot", 
+              "effects", "tidyr", "purrr", "gridExtra", "knitr", 
+              "ggeffects", "corrplot", "broom.mixed", "viridis", "MASS",
+              "scales", "RColorBrewer", "dplyr", "car", "emmeans", "performance")
+
+for(pkg in packages) {
+  if(!require(pkg, character.only = TRUE, quietly = TRUE)) {
+    install.packages(pkg, quiet = TRUE)
+    library(pkg, character.only = TRUE, quietly = TRUE)
+  }
+}
+
+# Explicitly ensure dplyr functions are available
+library(dplyr, warn.conflicts = FALSE)
+
+# Function to save plots
+save_plot <- function(plot_obj, filename, width = 12, height = 8) {
+  ggsave(file.path("Figures&Tables", paste0(filename, ".png")), 
+         plot_obj, width = width, height = height, dpi = 300)
+  ggsave(file.path("Figures&Tables", paste0(filename, ".pdf")), 
+         plot_obj, width = width, height = height)
+}
+
+# Custom theme for plots
+theme_demographic <- function() {
+  theme_minimal() +
+    theme(
+      plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
+      plot.subtitle = element_text(size = 12, hjust = 0.5),
+      axis.title = element_text(size = 11, face = "bold"),
+      axis.text = element_text(size = 10),
+      legend.title = element_text(size = 11, face = "bold"),
+      legend.text = element_text(size = 10),
+      strip.text = element_text(size = 10, face = "bold"),
+      panel.grid.minor = element_blank(),
+      panel.border = element_rect(colour = "grey80", fill = NA, size = 0.5)
+    )
+}
+```
+
+```{r load_and_preprocess_data}
+# Load datasets
+data_2017 <- read.csv("integrated_data_Eurobarometer2017.csv", stringsAsFactors = FALSE)
+data_2024 <- read.csv("integrated_data_Eurobarometer2024.csv", stringsAsFactors = FALSE)
+
+# Preprocessing function for 2017 data
+preprocess_2017 <- function(data) {
+  data %>%
+    mutate(
+      # Education variable processing
+      education_years = case_when(
+        d8 == 0 ~ NA_real_,         # Refused
+        d8 >= 2 & d8 <= 87 ~ d8,    # Normal education finishing age
+        d8 == 97 ~ 0,               # No education
+        d8 == 98 ~ NA_real_,        # Still studying
+        d8 == 99 ~ NA_real_,        # Don't know
+        TRUE ~ NA_real_
+      ),
+      
+      # Standardise GDP per capita
+      gdp_per_capita_standardised = as.numeric(scale(gdp_per_capita_2016)),
+      
+      # Simplified gender variable
+      gender_binary = factor(case_when(
+        d10 == 1 ~ 0,               # Male (reference)
+        d10 == 2 ~ 1,               # Female -> Non-male
+        TRUE ~ NA_real_
+      ), levels = 0:1, labels = c("Male", "Non-male")),
+      
+      # Community size factor variable
+      community_size = factor(case_when(
+        p6 == "1" ~ 1,              # Rural area
+        p6 == "2" ~ 2,              # Towns and suburbs
+        p6 == "3" ~ 3,              # Cities
+        TRUE ~ NA_real_
+      ), levels = 1:3, labels = c("Rural area", "Towns and suburbs", "Cities")),
+      
+      # Political orientation
+      political_lr = case_when(
+        d1r2 == 1 ~ 1,              # Left (1-2)
+        d1r2 == 2 ~ 2,              # (3-4)
+        d1r2 == 3 ~ 3,              # Centre (5-6)  
+        d1r2 == 4 ~ 4,              # (7-8)
+        d1r2 == 5 ~ 5,              # Right (9-10)
+        d1r2 == 9 ~ NA_real_,       # DK/Refusal
+        TRUE ~ NA_real_
+      ),
+      
+      # Digital skills variables
+      digital_skills_daily = case_when(
+        qd4_1 == 1 ~ 4, qd4_1 == 2 ~ 3, qd4_1 == 3 ~ 2, qd4_1 == 4 ~ 1,
+        qd4_1 == 5 ~ NA_real_, TRUE ~ NA_real_
+      ),
+      digital_skills_job = case_when(
+        qd4_2 == 1 ~ 4, qd4_2 == 2 ~ 3, qd4_2 == 3 ~ 2, qd4_2 == 4 ~ 1,
+        qd4_2 %in% c(5, 9) ~ NA_real_, TRUE ~ NA_real_
+      ),
+      digital_skills_future = case_when(
+        qd4_3 == 1 ~ 4, qd4_3 == 2 ~ 3, qd4_3 == 3 ~ 2, qd4_3 == 4 ~ 1,
+        qd4_3 %in% c(5, 9) ~ NA_real_, TRUE ~ NA_real_
+      ),
+      digital_skills_learning = case_when(
+        qd4_5 == 1 ~ 4, qd4_5 == 2 ~ 3, qd4_5 == 3 ~ 2, qd4_5 == 4 ~ 1,
+        qd4_5 == 5 ~ NA_real_, TRUE ~ NA_real_
+      ),
+      
+      # Dependent variables (keeping original 1-4 scale: 1=Totally agree, 4=Totally disagree)
+      robot_job_losses = case_when(
+        qd12_1 %in% 1:4 ~ qd12_1,
+        qd12_1 == 5 ~ NA_real_, TRUE ~ NA_real_
+      ),
+      robot_good_society = case_when(
+        qd12_2 %in% 1:4 ~ qd12_2,
+        qd12_2 == 5 ~ NA_real_, TRUE ~ NA_real_
+      ),
+      robot_careful_mgmt = case_when(
+        qd12_3 %in% 1:4 ~ qd12_3,
+        qd12_3 == 5 ~ NA_real_, TRUE ~ NA_real_
+      ),
+      robot_steal_jobs = case_when(
+        qd12_6 %in% 1:4 ~ qd12_6,
+        qd12_6 == 5 ~ NA_real_, TRUE ~ NA_real_
+      ),
+      
+      # Country-level demographic variables
+      fertility_rate = fertility_rate_2016,
+      pop_65_above = pop_65_above_2016,
+      aging_fertility_ratio = pop_65_above_2016 / fertility_rate_2016,
+      ihdi = ihdi_2016,
+      
+      # Year indicator
+      year = 2017
+    ) %>%
+    rowwise() %>%
+    mutate(
+      digital_skills_avg = mean(c(digital_skills_daily, digital_skills_job, 
+                                 digital_skills_future, digital_skills_learning), na.rm = TRUE)
+    ) %>%
+    ungroup() %>%
+    mutate(
+      digital_skills_avg = ifelse(is.nan(digital_skills_avg), NA_real_, digital_skills_avg)
+    )
+}
+
+# Preprocessing function for 2024 data
+preprocess_2024 <- function(data) {
+  data %>%
+    mutate(
+      # Education variable processing
+      education_years = case_when(
+        d8 == 0 ~ NA_real_,         # Refused
+        d8 >= 2 & d8 <= 87 ~ d8,    # Normal education finishing age
+        d8 == 97 ~ 0,               # No education
+        d8 == 98 ~ NA_real_,        # Still studying
+        d8 == 99 ~ NA_real_,        # Don't know
+        TRUE ~ NA_real_
+      ),
+      
+      # Standardise GDP per capita
+      gdp_per_capita_standardised = as.numeric(scale(gdp_per_capita_2023)),
+      
+      # Simplified gender variable (including non-binary)
+      gender_binary = factor(case_when(
+        d10 == 1 ~ 0,               # Male (reference)
+        d10 %in% c(2, 3) ~ 1,       # Female & Non-binary -> Non-male
+        TRUE ~ NA_real_
+      ), levels = 0:1, labels = c("Male", "Non-male")),
+      
+      # Community size factor variable (matching 2017 ordering)
+      community_size = factor(case_when(
+        p6 == 3 ~ 1,                # Rural area
+        p6 == 2 ~ 2,                # Towns and suburbs
+        p6 == 1 ~ 3,                # Cities
+        TRUE ~ NA_real_
+      ), levels = 1:3, labels = c("Rural area", "Towns and suburbs", "Cities")),
+      
+      # Political orientation
+      political_lr = case_when(
+        d1r2 == 1 ~ 1,              # Left (1-2)
+        d1r2 == 2 ~ 2,              # (3-4)
+        d1r2 == 3 ~ 3,              # Centre (5-6)  
+        d1r2 == 4 ~ 4,              # (7-8)
+        d1r2 == 5 ~ 5,              # Right (9-10)
+        d1r2 == 9 ~ NA_real_,       # DK/Refusal
+        TRUE ~ NA_real_
+      ),
+      
+      # Digital skills variables
+      digital_skills_daily = case_when(
+        qb2_1 == 1 ~ 4, qb2_1 == 2 ~ 3, qb2_1 == 3 ~ 2, qb2_1 == 4 ~ 1,
+        qb2_1 %in% c(5, 6) ~ NA_real_, TRUE ~ NA_real_
+      ),
+      digital_skills_job = case_when(
+        qb2_2 == 1 ~ 4, qb2_2 == 2 ~ 3, qb2_2 == 3 ~ 2, qb2_2 == 4 ~ 1,
+        qb2_2 %in% c(5, 6) ~ NA_real_, TRUE ~ NA_real_
+      ),
+      digital_skills_future = case_when(
+        qb2_3 == 1 ~ 4, qb2_3 == 2 ~ 3, qb2_3 == 3 ~ 2, qb2_3 == 4 ~ 1,
+        qb2_3 %in% c(5, 6) ~ NA_real_, TRUE ~ NA_real_
+      ),
+      digital_skills_learning = case_when(
+        qb2_4 == 1 ~ 4, qb2_4 == 2 ~ 3, qb2_4 == 3 ~ 2, qb2_4 == 4 ~ 1,
+        qb2_4 %in% c(5, 6) ~ NA_real_, TRUE ~ NA_real_
+      ),
+      
+      # Dependent variables (keeping original 1-4 scale: 1=Totally agree, 4=Totally disagree)
+      robot_job_losses = case_when(
+        qb6_1 %in% 1:4 ~ qb6_1,
+        qb6_1 == 5 ~ NA_real_, TRUE ~ NA_real_
+      ),
+      robot_good_society = case_when(
+        qb6_2 %in% 1:4 ~ qb6_2,
+        qb6_2 == 5 ~ NA_real_, TRUE ~ NA_real_
+      ),
+      robot_careful_mgmt = case_when(
+        qb6_3 %in% 1:4 ~ qb6_3,
+        qb6_3 == 5 ~ NA_real_, TRUE ~ NA_real_
+      ),
+      robot_steal_jobs = case_when(
+        qb6_5 %in% 1:4 ~ qb6_5,
+        qb6_5 == 5 ~ NA_real_, TRUE ~ NA_real_
+      ),
+      
+      # Country-level demographic variables
+      fertility_rate = fertility_rate_2023,
+      pop_65_above = pop_65_above_2023,
+      aging_fertility_ratio = pop_65_above_2023 / fertility_rate_2023,
+      ihdi = ihdi_2023,
+      
+      # Year indicator
+      year = 2024
+    ) %>%
+    rowwise() %>%
+    mutate(
+      digital_skills_avg = mean(c(digital_skills_daily, digital_skills_job, 
+                                 digital_skills_future, digital_skills_learning), na.rm = TRUE)
+    ) %>%
+    ungroup() %>%
+    mutate(
+      digital_skills_avg = ifelse(is.nan(digital_skills_avg), NA_real_, digital_skills_avg)
+    )
+}
+
+# Preprocess both datasets
+data_2017_processed <- preprocess_2017(data_2017)
+data_2024_processed <- preprocess_2024(data_2024)
+
+# Combine datasets for integrated analysis
+combined_data <- bind_rows(data_2017_processed, data_2024_processed)
+
+cat("Data preprocessing completed:\n")
+cat("2017 data:", nrow(data_2017_processed), "observations\n")
+cat("2024 data:", nrow(data_2024_processed), "observations\n")
+cat("Combined data:", nrow(combined_data), "observations\n")
+```
+
+# Research Question and Methodological Approach
+
+This analysis addresses the research question: **"Do societies with different levels of demographic transition show different patterns of change in AI/robot attitudes from 2017 to 2024?"**
+
+## Key Methodological Improvements:
+
+1. **Explicit Interaction Testing**: Using `demographic_group × year` interactions to directly test the research question
+2. **Complete Control Strategy**: Full control of individual-level AND country-level variables
+3. **Robust Model Selection**: Linear models with fallback to mixed effects when appropriate
+4. **Multicollinearity Management**: VIF checks and correlation diagnostics
+5. **Multiple Validation Approaches**: Both categorical and continuous analyses
+
+```{r create_robust_demographic_groups}
+# Function to create robust demographic groups using 2017 baseline values and median split
+create_robust_groups <- function(data, demographic_var, method = "median_2017") {
+  # Get 2017 baseline demographic data for classification
+  baseline_demographics <- data %>%
+    filter(year == 2017) %>%
+    group_by(isocntry) %>%
+    summarise(
+      demo_value = first(!!sym(demographic_var)),
+      .groups = "drop"
+    ) %>%
+    filter(!is.na(demo_value))
+  
+  # Use median split on 2017 values for consistent grouping
+  baseline_median <- median(baseline_demographics$demo_value, na.rm = TRUE)
+  
+  country_groups <- baseline_demographics %>%
+    mutate(
+      demographic_group = ifelse(demo_value >= baseline_median, "High", "Low")
+    )
+  
+  # Convert to factor with proper ordering
+  country_groups$demographic_group <- factor(country_groups$demographic_group, 
+                                           levels = c("Low", "High"))
+  
+  # Merge back to main data (applies same classification to both years)
+  result <- data %>%
+    left_join(country_groups %>% dplyr::select(isocntry, demographic_group), 
+              by = "isocntry") %>%
+    filter(!is.na(demographic_group))
+  
+  # Report group composition
+  cat(paste("Demographic variable:", demographic_var, "\n"))
+  cat(paste("Method: Median split based on 2017 values\n"))
+  cat(paste("Median threshold (2017):", round(baseline_median, 3), "\n"))
+  
+  # Show which countries are in each group
+  country_classification <- country_groups %>%
+    arrange(demographic_group, demo_value)
+  
+  cat("\nCountry Classifications:\n")
+  cat("LOW GROUP:\n")
+  low_countries <- country_classification %>% filter(demographic_group == "Low")
+  for(i in 1:nrow(low_countries)) {
+    cat(paste("  ", low_countries$isocntry[i], "(", round(low_countries$demo_value[i], 3), ")\n"))
+  }
+  
+  cat("\nHIGH GROUP:\n")
+  high_countries <- country_classification %>% filter(demographic_group == "High")
+  for(i in 1:nrow(high_countries)) {
+    cat(paste("  ", high_countries$isocntry[i], "(", round(high_countries$demo_value[i], 3), ")\n"))
+  }
+  
+  group_summary <- result %>%
+    group_by(year, demographic_group) %>%
+    summarise(
+      n_countries = n_distinct(isocntry),
+      n_individuals = n(),
+      .groups = "drop"
+    )
+  
+  cat("\nSample sizes by year and group:\n")
+  print(group_summary)
+  
+  return(result)
+}
+
+# Create robust demographic groups
+cat("=== Creating Robust Demographic Groups ===\n")
+fertility_data_robust <- create_robust_groups(combined_data, "fertility_rate", "median_2017")
+cat("\n==================================================\n")
+aging_data_robust <- create_robust_groups(combined_data, "pop_65_above", "median_2017")
+cat("\n==================================================\n")
+transition_data_robust <- create_robust_groups(combined_data, "aging_fertility_ratio", "median_2017")
+
+# Also create datasets with standardised continuous variables for continuous analysis
+combined_data_continuous <- combined_data %>%
+  mutate(
+    fertility_rate_std = as.numeric(scale(fertility_rate)),
+    pop_65_above_std = as.numeric(scale(pop_65_above)),
+    aging_fertility_ratio_std = as.numeric(scale(aging_fertility_ratio))
+  )
+```
+
+```{r enhanced_interaction_model_functions}
+# Enhanced function to fit interaction models with full controls
+fit_interaction_model <- function(data, outcome_var, demographic_var, model_type = "categorical") {
+  # Filter complete cases - INCLUDING GDP and IHDI
+  if(model_type == "categorical") {
+    model_data <- data %>%
+      filter(!is.na(!!sym(outcome_var))) %>%
+      filter(!is.na(d11), !is.na(gender_binary), !is.na(education_years),
+             !is.na(community_size), !is.na(political_lr), !is.na(digital_skills_avg),
+             !is.na(gdp_per_capita_standardised), !is.na(ihdi), !is.na(demographic_group))
+    
+    # Full model formula WITH country-level controls
+    formula_full <- paste0(outcome_var, " ~ demographic_group * factor(year) + 
+                          d11 + gender_binary + education_years + community_size + 
+                          political_lr + digital_skills_avg + gdp_per_capita_standardised + 
+                          ihdi")
+    
+    # Mixed effects formula
+    formula_mixed <- paste0(formula_full, " + (1 | isocntry)")
+    
+  } else {
+    # Continuous model
+    model_data <- data %>%
+      filter(!is.na(!!sym(outcome_var))) %>%
+      filter(!is.na(d11), !is.na(gender_binary), !is.na(education_years),
+             !is.na(community_size), !is.na(political_lr), !is.na(digital_skills_avg),
+             !is.na(gdp_per_capita_standardised), !is.na(ihdi), !is.na(!!sym(demographic_var)))
+    
+    formula_full <- paste0(outcome_var, " ~ ", demographic_var, " * factor(year) + 
+                          d11 + gender_binary + education_years + community_size + 
+                          political_lr + digital_skills_avg + gdp_per_capita_standardised + 
+                          ihdi")
+    
+    formula_mixed <- paste0(formula_full, " + (1 | isocntry)")
+  }
+  
+  if(nrow(model_data) == 0) {
+    return(NULL)
+  }
+  
+  # Report final sample size
+  cat("Final sample size:", nrow(model_data), "observations from", 
+      n_distinct(model_data$isocntry), "countries\n")
+  
+  # Step 1: Try linear model first (most robust)
+  model_lm <- NULL
+  tryCatch({
+    model_lm <- lm(formula(formula_full), data = model_data)
+    
+    # Check for multicollinearity
+    if(require(car, quietly = TRUE)) {
+      vif_values <- vif(model_lm)
+      max_vif <- max(vif_values, na.rm = TRUE)
+      cat("Maximum VIF:", round(max_vif, 2), "\n")
+      
+      if(max_vif > 10) {
+        cat("WARNING: High multicollinearity detected (VIF > 10)\n")
+      }
+    }
+    
+    cat("Linear model: SUCCESS\n")
+  }, error = function(e) {
+    cat("Linear model FAILED:", e$message, "\n")
+  })
+  
+  # Step 2: Try mixed effects if linear model succeeded and we have enough countries
+  model_mixed <- NULL
+  if(!is.null(model_lm) && n_distinct(model_data$isocntry) >= 10) {
+    tryCatch({
+      model_mixed <- lmer(formula(formula_mixed), data = model_data)
+      cat("Mixed effects model: SUCCESS\n")
+    }, error = function(e) {
+      cat("Mixed effects model FAILED:", e$message, "\n")
+    })
+  }
+  
+  # Return the best available model
+  if(!is.null(model_mixed)) {
+    return(list(model = model_mixed, model_lm = model_lm, data = model_data, 
+                formula = formula_mixed, model_type = "mixed"))
+  } else if(!is.null(model_lm)) {
+    return(list(model = model_lm, data = model_data, 
+                formula = formula_full, model_type = "linear"))
+  } else {
+    return(NULL)
+  }
+}
+
+# Enhanced function to test interaction significance
+test_interaction_significance <- function(model_result) {
+  if(is.null(model_result)) return(NULL)
+  
+  tryCatch({
+    model <- model_result$model
+    
+    if(model_result$model_type == "mixed") {
+      # Mixed effects model - use Anova from car package
+      if(require(car, quietly = TRUE)) {
+        anova_result <- Anova(model, type = "II")
+        
+        # Look for interaction term
+        interaction_rows <- grep("demographic_group.*factor\\(year\\)|factor\\(year\\).*demographic_group", 
+                                rownames(anova_result))
+        
+        if(length(interaction_rows) > 0) {
+          interaction_p <- anova_result[interaction_rows[1], "Pr(>Chisq)"]
+        } else {
+          interaction_p <- NA
+        }
+      } else {
+        # Fallback to summary
+        coef_summary <- summary(model)$coefficients
+        interaction_rows <- grep("demographic_group.*factor\\(year\\)|factor\\(year\\).*demographic_group", 
+                                rownames(coef_summary))
+        
+        if(length(interaction_rows) > 0) {
+          interaction_p <- coef_summary[interaction_rows[1], "Pr(>|t|)"]
+        } else {
+          interaction_p <- NA
+        }
+      }
+    } else {
+      # Linear model - use standard ANOVA
+      anova_result <- anova(model)
+      
+      # Look for interaction term
+      interaction_rows <- grep("demographic_group.*factor\\(year\\)|factor\\(year\\).*demographic_group", 
+                              rownames(anova_result))
+      
+      if(length(interaction_rows) > 0) {
+        interaction_p <- anova_result[interaction_rows[1], "Pr(>F)"]
+      } else {
+        interaction_p <- NA
+      }
+    }
+    
+    return(list(
+      interaction_p = interaction_p,
+      model_summary = summary(model),
+      model_type = model_result$model_type
+    ))
+    
+  }, error = function(e) {
+    cat("Error in interaction significance test:", e$message, "\n")
+    return(list(
+      interaction_p = NA,
+      model_summary = summary(model_result$model),
+      model_type = model_result$model_type
+    ))
+  })
+}
+
+# Enhanced function to calculate effect sizes for interactions
+calculate_interaction_effect_sizes <- function(model_result, demographic_var_name) {
+  if(is.null(model_result)) return(NULL)
+  
+  tryCatch({
+    # Get predicted values for interaction
+    if(require(ggeffects, quietly = TRUE)) {
+      pred_data <- ggpredict(model_result$model, 
+                            terms = c("demographic_group", "year"))
+      
+      # Convert to data frame and calculate effect sizes
+      effect_data <- as.data.frame(pred_data) %>%
+        mutate(
+          demographic_var = demographic_var_name,
+          year = as.numeric(as.character(group)),
+          demographic_group = x
+        ) %>%
+        dplyr::select(demographic_var, year, demographic_group, predicted, conf.low, conf.high)
+      
+      # Calculate differences between groups for each year
+      effect_sizes <- effect_data %>%
+        group_by(year) %>%
+        summarise(
+          high_mean = predicted[demographic_group == "High"],
+          low_mean = predicted[demographic_group == "Low"],
+          high_se = (conf.high[demographic_group == "High"] - conf.low[demographic_group == "High"]) / (2 * 1.96),
+          low_se = (conf.high[demographic_group == "Low"] - conf.low[demographic_group == "Low"]) / (2 * 1.96),
+          .groups = "drop"
+        ) %>%
+        mutate(
+          difference = high_mean - low_mean,
+          pooled_se = sqrt((high_se^2 + low_se^2) / 2),
+          cohens_d = difference / pooled_se,
+          demographic_var = demographic_var_name
+        )
+      
+      # Calculate change in effect size (interaction effect size)
+      if(nrow(effect_sizes) == 2) {
+        interaction_effect_size <- effect_sizes$cohens_d[effect_sizes$year == 2024] - 
+                                 effect_sizes$cohens_d[effect_sizes$year == 2017]
+      } else {
+        interaction_effect_size <- NA
+      }
+      
+      return(list(
+        predictions = effect_data,
+        effect_sizes = effect_sizes,
+        interaction_effect_size = interaction_effect_size
+      ))
+    } else {
+      return(NULL)
+    }
+  }, error = function(e) {
+    cat("Error calculating effect sizes:", e$message, "\n")
+    return(NULL)
+  })
+}
+```
+
+# Part 1: Categorical Analysis with Complete Controls
+
+```{r fertility_interaction_analysis}
+cat("=== TOTAL FERTILITY RATE INTERACTION ANALYSIS (COMPLETE CONTROLS) ===\n")
+
+outcome_vars <- c("robot_good_society", "robot_steal_jobs", "robot_job_losses", "robot_careful_mgmt")
+
+# Fit interaction models for all outcomes
+fertility_models <- map(outcome_vars, ~{
+  cat("\n--- Analysing outcome:", .x, "---\n")
+  
+  model_result <- fit_interaction_model(fertility_data_robust, .x, "demographic_group", "categorical")
+  
+  if(!is.null(model_result)) {
+    # Test interaction significance
+    interaction_test <- test_interaction_significance(model_result)
+    
+    # Calculate effect sizes
+    effect_sizes <- calculate_interaction_effect_sizes(model_result, "Total Fertility Rate (TFR)")
+    
+    return(list(
+      outcome = .x,
+      model = model_result,
+      interaction_test = interaction_test,
+      effect_sizes = effect_sizes
+    ))
+  } else {
+    cat("Model failed for outcome:", .x, "\n")
+    return(NULL)
+  }
+})
+
+names(fertility_models) <- outcome_vars
+
+# Create summary table of interaction tests
+fertility_interaction_summary <- map_dfr(fertility_models, ~{
+  if(!is.null(.x) && !is.null(.x$interaction_test) && !is.null(.x$interaction_test$interaction_p)) {
+    p_value <- .x$interaction_test$interaction_p
+    is_significant <- if(!is.na(p_value)) p_value < 0.05 else NA
+    effect_size <- if(!is.null(.x$effect_sizes)) .x$effect_sizes$interaction_effect_size else NA
+    model_type <- if(!is.null(.x$interaction_test)) .x$interaction_test$model_type else "unknown"
+    
+    data.frame(
+      outcome = .x$outcome,
+      interaction_p = p_value,
+      significant = is_significant,
+      interaction_effect_size = effect_size,
+      model_type = model_type
+    )
+  } else {
+    outcome_name <- if(!is.null(.x)) .x$outcome else "unknown"
+    data.frame(
+      outcome = outcome_name,
+      interaction_p = NA,
+      significant = NA,
+      interaction_effect_size = NA,
+      model_type = "failed"
+    )
+  }
+})
+
+cat("\nTotal Fertility Rate Interaction Effects Summary (COMPLETE CONTROLS):\n")
+print(kable(fertility_interaction_summary, digits = 4, 
+            caption = "Interaction Effects: Total Fertility Rate Groups × Year (All Controls)"))
+
+# Combine all predictions for plotting
+fertility_all_predictions <- map_dfr(fertility_models, ~{
+  if(!is.null(.x) && !is.null(.x$effect_sizes) && !is.null(.x$effect_sizes$predictions)) {
+    tryCatch({
+      .x$effect_sizes$predictions %>%
+        mutate(outcome = .x$outcome)
+    }, error = function(e) {
+      cat("Error combining predictions for outcome", .x$outcome, ":", e$message, "\n")
+      return(data.frame())
+    })
+  } else {
+    return(data.frame())
+  }
+})
+
+# Create interaction plot if we have predictions
+if(!is.null(fertility_all_predictions) && nrow(fertility_all_predictions) > 0) {
+  # Create interaction plot
+  outcome_labels <- c(
+    "robot_good_society" = "Good for Society", 
+    "robot_steal_jobs" = "Steal Jobs",
+    "robot_job_losses" = "Job Losses",
+    "robot_careful_mgmt" = "Careful Management"
+  )
+  
+  fertility_all_predictions$outcome_label <- factor(
+    outcome_labels[fertility_all_predictions$outcome],
+    levels = c("Good for Society", "Steal Jobs", "Job Losses", "Careful Management")
+  )
+  
+  fertility_interaction_plot <- ggplot(fertility_all_predictions, 
+                                      aes(x = factor(year), y = predicted, 
+                                          colour = demographic_group, group = demographic_group)) +
+    geom_point(position = position_dodge(width = 0.3), size = 3) +
+    geom_line(position = position_dodge(width = 0.3), size = 1) +
+    geom_errorbar(aes(ymin = conf.low, ymax = conf.high), 
+                  position = position_dodge(width = 0.3), 
+                  width = 0.1, size = 0.8) +
+    facet_wrap(~outcome_label, scales = "free_y", ncol = 2) +
+    scale_colour_manual(values = c("Low" = "#2166AC", "High" = "#D6604D"),
+                       name = "Total Fertility Rate Group") +
+    labs(
+      title = "AI Attitudes by Total Fertility Rate Groups: Complete Controlled Analysis",
+      subtitle = "Individual & country-level variables controlled: Age, Gender, Education, Political Orientation, Community Size, Digital Skills, GDP per Capita, IHDI",
+      x = "Year",
+      y = "Predicted Attitude Score",
+      caption = "Note: Higher scores indicate stronger disagreement. Error bars: 95% CI.\nAll individual and country-level confounders controlled."
+    ) +
+    theme_demographic() +
+    theme(
+      legend.position = "bottom",
+      strip.background = element_rect(fill = "grey90", colour = "grey80")
+    )
+  
+  print(fertility_interaction_plot)
+  save_plot(fertility_interaction_plot, "fertility_interaction_complete_controls", width = 14, height = 10)
+}
+```
+
+```{r aging_interaction_analysis}
+cat("=== POPULATION AGEING INTERACTION ANALYSIS (COMPLETE CONTROLS) ===\n")
+
+# Fit interaction models for all outcomes
+aging_models <- map(outcome_vars, ~{
+  cat("\n--- Analysing outcome:", .x, "---\n")
+  
+  model_result <- fit_interaction_model(aging_data_robust, .x, "demographic_group", "categorical")
+  
+  if(!is.null(model_result)) {
+    # Test interaction significance
+    interaction_test <- test_interaction_significance(model_result)
+    
+    # Calculate effect sizes
+    effect_sizes <- calculate_interaction_effect_sizes(model_result, "Population Ageing")
+    
+    return(list(
+      outcome = .x,
+      model = model_result,
+      interaction_test = interaction_test,
+      effect_sizes = effect_sizes
+    ))
+  } else {
+    cat("Model failed for outcome:", .x, "\n")
+    return(NULL)
+  }
+})
+
+names(aging_models) <- outcome_vars
+
+# Create summary table of interaction tests
+aging_interaction_summary <- map_dfr(aging_models, ~{
+  if(!is.null(.x) && !is.null(.x$interaction_test) && !is.null(.x$interaction_test$interaction_p)) {
+    p_value <- .x$interaction_test$interaction_p
+    is_significant <- if(!is.na(p_value)) p_value < 0.05 else NA
+    effect_size <- if(!is.null(.x$effect_sizes)) .x$effect_sizes$interaction_effect_size else NA
+    model_type <- if(!is.null(.x$interaction_test)) .x$interaction_test$model_type else "unknown"
+    
+    data.frame(
+      outcome = .x$outcome,
+      interaction_p = p_value,
+      significant = is_significant,
+      interaction_effect_size = effect_size,
+      model_type = model_type
+    )
+  } else {
+    outcome_name <- if(!is.null(.x)) .x$outcome else "unknown"
+    data.frame(
+      outcome = outcome_name,
+      interaction_p = NA,
+      significant = NA,
+      interaction_effect_size = NA,
+      model_type = "failed"
+    )
+  }
+})
+
+cat("\nPopulation Ageing Interaction Effects Summary (COMPLETE CONTROLS):\n")
+print(kable(aging_interaction_summary, digits = 4, 
+            caption = "Interaction Effects: Population Ageing Groups × Year (All Controls)"))
+
+# Combine all predictions for plotting
+aging_all_predictions <- map_dfr(aging_models, ~{
+  if(!is.null(.x) && !is.null(.x$effect_sizes) && !is.null(.x$effect_sizes$predictions)) {
+    tryCatch({
+      .x$effect_sizes$predictions %>%
+        mutate(outcome = .x$outcome)
+    }, error = function(e) {
+      cat("Error combining predictions for outcome", .x$outcome, ":", e$message, "\n")
+      return(data.frame())
+    })
+  } else {
+    return(data.frame())
+  }
+})
+
+# Create interaction plot if we have predictions
+if(!is.null(aging_all_predictions) && nrow(aging_all_predictions) > 0) {
+  aging_all_predictions$outcome_label <- factor(
+    outcome_labels[aging_all_predictions$outcome],
+    levels = c("Good for Society", "Steal Jobs", "Job Losses", "Careful Management")
+  )
+  
+  aging_interaction_plot <- ggplot(aging_all_predictions, 
+                                  aes(x = factor(year), y = predicted, 
+                                      colour = demographic_group, group = demographic_group)) +
+    geom_point(position = position_dodge(width = 0.3), size = 3) +
+    geom_line(position = position_dodge(width = 0.3), size = 1) +
+    geom_errorbar(aes(ymin = conf.low, ymax = conf.high), 
+                  position = position_dodge(width = 0.3), 
+                  width = 0.1, size = 0.8) +
+    facet_wrap(~outcome_label, scales = "free_y", ncol = 2) +
+    scale_colour_manual(values = c("Low" = "#2166AC", "High" = "#D6604D"),
+                       name = "Population Ageing Group") +
+    labs(
+      title = "AI Attitudes by Population Ageing Groups: Complete Controlled Analysis",
+      subtitle = "Individual & country-level variables controlled: Age, Gender, Education, Political Orientation, Community Size, Digital Skills, GDP per Capita, IHDI",
+      x = "Year",
+      y = "Predicted Attitude Score",
+      caption = "Note: Higher scores indicate stronger disagreement. Error bars: 95% CI.\nAll individual and country-level confounders controlled."
+    ) +
+    theme_demographic() +
+    theme(
+      legend.position = "bottom",
+      strip.background = element_rect(fill = "grey90", colour = "grey80")
+    )
+  
+  print(aging_interaction_plot)
+  save_plot(aging_interaction_plot, "aging_interaction_complete_controls", width = 14, height = 10)
+}
+```
+
+```{r transition_interaction_analysis}
+cat("=== DEMOGRAPHIC TRANSITION INTERACTION ANALYSIS (COMPLETE CONTROLS) ===\n")
+
+# Fit interaction models for all outcomes
+transition_models <- map(outcome_vars, ~{
+  cat("\n--- Analysing outcome:", .x, "---\n")
+  
+  model_result <- fit_interaction_model(transition_data_robust, .x, "demographic_group", "categorical")
+  
+  if(!is.null(model_result)) {
+    # Test interaction significance
+    interaction_test <- test_interaction_significance(model_result)
+    
+    # Calculate effect sizes
+    effect_sizes <- calculate_interaction_effect_sizes(model_result, "Demographic Transition")
+    
+    return(list(
+      outcome = .x,
+      model = model_result,
+      interaction_test = interaction_test,
+      effect_sizes = effect_sizes
+    ))
+  } else {
+    cat("Model failed for outcome:", .x, "\n")
+    return(NULL)
+  }
+})
+
+names(transition_models) <- outcome_vars
+
+# Create summary table of interaction tests
+transition_interaction_summary <- map_dfr(transition_models, ~{
+  if(!is.null(.x) && !is.null(.x$interaction_test) && !is.null(.x$interaction_test$interaction_p)) {
+    p_value <- .x$interaction_test$interaction_p
+    is_significant <- if(!is.na(p_value)) p_value < 0.05 else NA
+    effect_size <- if(!is.null(.x$effect_sizes)) .x$effect_sizes$interaction_effect_size else NA
+    model_type <- if(!is.null(.x$interaction_test)) .x$interaction_test$model_type else "unknown"
+    
+    data.frame(
+      outcome = .x$outcome,
+      interaction_p = p_value,
+      significant = is_significant,
+      interaction_effect_size = effect_size,
+      model_type = model_type
+    )
+  } else {
+    outcome_name <- if(!is.null(.x)) .x$outcome else "unknown"
+    data.frame(
+      outcome = outcome_name,
+      interaction_p = NA,
+      significant = NA,
+      interaction_effect_size = NA,
+      model_type = "failed"
+    )
+  }
+})
+
+cat("\nDemographic Transition Interaction Effects Summary (COMPLETE CONTROLS):\n")
+print(kable(transition_interaction_summary, digits = 4, 
+            caption = "Interaction Effects: Demographic Transition Groups × Year (All Controls)"))
+
+# Combine all predictions for plotting
+transition_all_predictions <- map_dfr(transition_models, ~{
+  if(!is.null(.x) && !is.null(.x$effect_sizes) && !is.null(.x$effect_sizes$predictions)) {
+    tryCatch({
+      .x$effect_sizes$predictions %>%
+        mutate(outcome = .x$outcome)
+    }, error = function(e) {
+      cat("Error combining predictions for outcome", .x$outcome, ":", e$message, "\n")
+      return(data.frame())
+    })
+  } else {
+    return(data.frame())
+  }
+})
+
+# Create interaction plot if we have predictions
+if(!is.null(transition_all_predictions) && nrow(transition_all_predictions) > 0) {
+  transition_all_predictions$outcome_label <- factor(
+    outcome_labels[transition_all_predictions$outcome],
+    levels = c("Good for Society", "Steal Jobs", "Job Losses", "Careful Management")
+  )
+  
+  transition_interaction_plot <- ggplot(transition_all_predictions, 
+                                       aes(x = factor(year), y = predicted, 
+                                           colour = demographic_group, group = demographic_group)) +
+    geom_point(position = position_dodge(width = 0.3), size = 3) +
+    geom_line(position = position_dodge(width = 0.3), size = 1) +
+    geom_errorbar(aes(ymin = conf.low, ymax = conf.high), 
+                  position = position_dodge(width = 0.3), 
+                  width = 0.1, size = 0.8) +
+    facet_wrap(~outcome_label, scales = "free_y", ncol = 2) +
+    scale_colour_manual(values = c("Low" = "#2166AC", "High" = "#D6604D"),
+                       name = "Demographic Transition Group") +
+    labs(
+      title = "AI Attitudes by Demographic Transition Groups: Complete Controlled Analysis",
+      subtitle = "Individual & country-level variables controlled: Age, Gender, Education, Political Orientation, Community Size, Digital Skills, GDP per Capita, IHDI",
+      x = "Year",
+      y = "Predicted Attitude Score",
+      caption = "Note: Higher scores indicate stronger disagreement. Error bars: 95% CI.\nAll individual and country-level confounders controlled."
+    ) +
+    theme_demographic() +
+    theme(
+      legend.position = "bottom",
+      strip.background = element_rect(fill = "grey90", colour = "grey80")
+    )
+  
+  print(transition_interaction_plot)
+  save_plot(transition_interaction_plot, "transition_interaction_complete_controls", width = 14, height = 10)
+}
+```
+
+# Part 2: Continuous Variable Analysis with Complete Controls
+
+```{r continuous_analysis}
+cat("=== CONTINUOUS DEMOGRAPHIC VARIABLES ANALYSIS (COMPLETE CONTROLS) ===\n")
+
+# Function to fit continuous interaction models and create plots
+analyse_continuous_interactions <- function(data, demographic_var, var_name) {
+  # Fit models for all outcomes
+  continuous_models <- map(outcome_vars, ~{
+    cat("\n--- Analysing continuous outcome:", .x, "---\n")
+    
+    model_result <- fit_interaction_model(data, .x, demographic_var, "continuous")
+    
+    if(!is.null(model_result)) {
+      # Test interaction significance
+      interaction_test <- test_interaction_significance(model_result)
+      
+      # Get predictions for plotting
+      if(require(ggeffects, quietly = TRUE)) {
+        tryCatch({
+          pred_data <- ggpredict(model_result$model, 
+                                terms = c(demographic_var, "year"))
+          
+          return(list(
+            outcome = .x,
+            model = model_result,
+            interaction_test = interaction_test,
+            predictions = as.data.frame(pred_data)
+          ))
+        }, error = function(e) {
+          cat("Error getting predictions:", e$message, "\n")
+          return(list(
+            outcome = .x,
+            model = model_result,
+            interaction_test = interaction_test,
+            predictions = NULL
+          ))
+        })
+      } else {
+        return(list(
+          outcome = .x,
+          model = model_result,
+          interaction_test = interaction_test,
+          predictions = NULL
+        ))
+      }
+    } else {
+      return(NULL)
+    }
+  })
+  
+  names(continuous_models) <- outcome_vars
+  
+  # Create summary table
+  summary_table <- map_dfr(continuous_models, ~{
+    if(!is.null(.x) && !is.null(.x$interaction_test) && !is.null(.x$interaction_test$interaction_p)) {
+      p_value <- .x$interaction_test$interaction_p
+      is_significant <- if(!is.na(p_value)) p_value < 0.05 else NA
+      model_type <- if(!is.null(.x$interaction_test)) .x$interaction_test$model_type else "unknown"
+      
+      data.frame(
+        outcome = .x$outcome,
+        interaction_p = p_value,
+        significant = is_significant,
+        model_type = model_type
+      )
+    } else {
+      outcome_name <- if(!is.null(.x)) .x$outcome else "unknown"
+      data.frame(
+        outcome = outcome_name,
+        interaction_p = NA,
+        significant = NA,
+        model_type = "failed"
+      )
+    }
+  })
+  
+  cat(paste("\nContinuous Analysis:", var_name, "Interaction Effects (COMPLETE CONTROLS):\n"))
+  print(kable(summary_table, digits = 4, 
+              caption = paste("Interaction Effects:", var_name, "× Year (All Controls)")))
+  
+  # Create plots
+  all_predictions <- map_dfr(continuous_models, ~{
+    if(!is.null(.x) && !is.null(.x$predictions)) {
+      tryCatch({
+        .x$predictions %>%
+          mutate(
+            outcome = .x$outcome,
+            year = as.numeric(as.character(group))
+          )
+      }, error = function(e) {
+        cat("Error processing predictions for outcome", .x$outcome, ":", e$message, "\n")
+        return(data.frame())
+      })
+    } else {
+      return(data.frame())
+    }
+  })
+  
+  # Create plot if we have predictions
+  if(!is.null(all_predictions) && nrow(all_predictions) > 0) {
+    all_predictions$outcome_label <- factor(
+      outcome_labels[all_predictions$outcome],
+      levels = c("Good for Society", "Steal Jobs", "Job Losses", "Careful Management")
+    )
+    
+    continuous_plot <- ggplot(all_predictions, 
+                             aes(x = x, y = predicted, colour = factor(year))) +
+      geom_line(size = 1.2) +
+      geom_ribbon(aes(ymin = conf.low, ymax = conf.high, fill = factor(year)), 
+                  alpha = 0.2, colour = NA) +
+      facet_wrap(~outcome_label, scales = "free_y", ncol = 2) +
+      scale_colour_manual(values = c("2017" = "#1F78B4", "2024" = "#E31A1C"),
+                         name = "Year") +
+      scale_fill_manual(values = c("2017" = "#1F78B4", "2024" = "#E31A1C"),
+                       name = "Year") +
+      labs(
+        title = paste("AI Attitudes by", var_name, ": Complete Controlled Continuous Analysis"),
+        subtitle = "Individual & country-level variables controlled: Age, Gender, Education, Political Orientation, Community Size, Digital Skills, GDP per Capita, IHDI",
+        x = paste(var_name, "(Standardised)"),
+        y = "Predicted Attitude Score",
+        caption = "Note: Higher scores indicate stronger disagreement. Ribbons: 95% CI.\nAll individual and country-level confounders controlled."
+      ) +
+      theme_demographic() +
+      theme(
+        legend.position = "bottom",
+        strip.background = element_rect(fill = "grey90", colour = "grey80")
+      )
+    
+    print(continuous_plot)
+    save_plot(continuous_plot, paste0(tolower(gsub(" ", "_", var_name)), "_continuous_complete_controls"), 
+              width = 14, height = 10)
+  }
+  
+  return(list(models = continuous_models, summary = summary_table))
+}
+
+# Analyse each continuous demographic variable
+fertility_continuous <- analyse_continuous_interactions(combined_data_continuous, 
+                                                       "fertility_rate_std", 
+                                                       "Total Fertility Rate")
+
+aging_continuous <- analyse_continuous_interactions(combined_data_continuous, 
+                                                   "pop_65_above_std", 
+                                                   "Population Ageing")
+
+transition_continuous <- analyse_continuous_interactions(combined_data_continuous, 
+                                                        "aging_fertility_ratio_std", 
+                                                        "Demographic Transition")
+```
+
+# Part 3: Sensitivity Analysis with Complete Controls
+
+```{r sensitivity_analysis}
+cat("=== SENSITIVITY ANALYSIS (COMPLETE CONTROLS) ===\n")
+
+# Enhanced sensitivity analysis function for a specific outcome
+sensitivity_analysis_outcome <- function(data, demographic_var, outcome_var, thresholds = c(0.3, 0.4, 0.5, 0.6, 0.7)) {
+  sensitivity_results <- map_dfr(thresholds, ~{
+    threshold <- .x
+    
+    tryCatch({
+      # Create groups based on threshold using 2017 baseline
+      country_demographics <- data %>%
+        filter(year == 2017) %>%
+        group_by(isocntry) %>%
+        summarise(demo_value = first(!!sym(demographic_var)), .groups = "drop") %>%
+        filter(!is.na(demo_value))
+      
+      cutoff <- quantile(country_demographics$demo_value, threshold, na.rm = TRUE)
+      
+      country_groups <- country_demographics %>%
+        mutate(demographic_group = factor(ifelse(demo_value >= cutoff, "High", "Low"),
+                                         levels = c("Low", "High")))
+      
+      # Merge back to data
+      analysis_data <- data %>%
+        left_join(country_groups %>% dplyr::select(isocntry, demographic_group), 
+                  by = "isocntry") %>%
+        filter(!is.na(demographic_group))
+      
+      # Test specific outcome for sensitivity WITH COMPLETE CONTROLS
+      model_result <- fit_interaction_model(analysis_data, outcome_var, 
+                                           "demographic_group", "categorical")
+      
+      if(!is.null(model_result)) {
+        interaction_test <- test_interaction_significance(model_result)
+        
+        # Safe extraction of p-value and significance
+        p_value <- if(!is.null(interaction_test) && !is.null(interaction_test$interaction_p)) {
+          interaction_test$interaction_p
+        } else {
+          NA
+        }
+        
+        is_significant <- if(!is.na(p_value)) p_value < 0.05 else NA
+        model_type <- if(!is.null(interaction_test)) interaction_test$model_type else "unknown"
+        
+        # Safe counting of groups
+        n_high <- sum(country_groups$demographic_group == "High", na.rm = TRUE)
+        n_low <- sum(country_groups$demographic_group == "Low", na.rm = TRUE)
+        
+        return(data.frame(
+          demographic_var = demographic_var,
+          outcome = outcome_var,
+          threshold = threshold,
+          interaction_p = p_value,
+          significant = is_significant,
+          n_high = n_high,
+          n_low = n_low,
+          model_type = model_type
+        ))
+      } else {
+        return(data.frame(
+          demographic_var = demographic_var,
+          outcome = outcome_var,
+          threshold = threshold,
+          interaction_p = NA,
+          significant = NA,
+          n_high = NA,
+          n_low = NA,
+          model_type = "failed"
+        ))
+      }
+    }, error = function(e) {
+      cat("Error in sensitivity analysis for threshold", threshold, ":", e$message, "\n")
+      return(data.frame(
+        demographic_var = demographic_var,
+        outcome = outcome_var,
+        threshold = threshold,
+        interaction_p = NA,
+        significant = NA,
+        n_high = NA,
+        n_low = NA,
+        model_type = "error"
+      ))
+    })
+  })
+  
+  return(sensitivity_results)
+}
+
+# Perform sensitivity analysis for each outcome variable
+cat("Performing comprehensive sensitivity analysis with complete controls...\n")
+
+# Define outcome variable labels for plots
+outcome_labels_sens <- c(
+  "robot_good_society" = "Good for Society",
+  "robot_steal_jobs" = "Steal Jobs", 
+  "robot_job_losses" = "Job Losses",
+  "robot_careful_mgmt" = "Careful Management"
+)
+
+# Robot Good Society sensitivity analysis
+cat("\n=== ROBOT GOOD FOR SOCIETY SENSITIVITY ANALYSIS ===\n")
+
+robot_good_society_sensitivity <- map_dfr(c("fertility_rate", "pop_65_above", "aging_fertility_ratio"), ~{
+  tryCatch({
+    sensitivity_analysis_outcome(combined_data, .x, "robot_good_society")
+  }, error = function(e) {
+    cat("Error in", .x, "sensitivity analysis:", e$message, "\n")
+    data.frame(demographic_var = .x, outcome = "robot_good_society", threshold = NA, 
+               interaction_p = NA, significant = NA, n_high = NA, n_low = NA, model_type = "error")
+  })
+})
+
+cat("\nSensitivity Analysis Results (Complete Controls - Robot Good for Society):\n")
+print(kable(robot_good_society_sensitivity, digits = 4, 
+            caption = "Robot Good for Society: Sensitivity of Interaction Effects to Different Thresholds"))
+
+# Plot for Robot Good Society
+if(nrow(robot_good_society_sensitivity) > 0 && !all(is.na(robot_good_society_sensitivity$threshold))) {
+  robot_good_society_plot <- tryCatch({
+    valid_data <- robot_good_society_sensitivity %>% 
+      filter(!is.na(threshold) & !is.na(interaction_p))
+    
+    if(nrow(valid_data) > 0) {
+      ggplot(valid_data, 
+             aes(x = threshold, y = interaction_p, colour = demographic_var, shape = model_type)) +
+        geom_line(size = 1) +
+        geom_point(size = 3) +
+        geom_hline(yintercept = 0.05, linetype = "dashed", alpha = 0.7) +
+        scale_y_log10() +
+        labs(
+          title = "Sensitivity Analysis: Robot Good for Society",
+          subtitle = "Interaction effect p-values across thresholds with complete controls",
+          x = "Threshold for High Group (Quantile)",
+          y = "Interaction p-value (log scale)",
+          colour = "Demographic Variable",
+          shape = "Model Type",
+          caption = "Dashed line: p = 0.05 significance threshold."
+        ) +
+        theme_demographic() +
+        theme(legend.position = "bottom")
+    } else {
+      ggplot() + theme_void() + 
+        labs(title = "No valid sensitivity analysis results for Robot Good Society")
+    }
+  }, error = function(e) {
+    cat("Error creating Robot Good Society sensitivity plot:", e$message, "\n")
+    ggplot() + theme_void() + labs(title = "Robot Good Society sensitivity plot could not be created")
+  })
+  
+  print(robot_good_society_plot)
+  save_plot(robot_good_society_plot, "sensitivity_robot_good_society_complete_controls", width = 12, height = 8)
+}
+
+# Robot Steal Jobs sensitivity analysis
+cat("\n=== ROBOT STEAL JOBS SENSITIVITY ANALYSIS ===\n")
+
+robot_steal_jobs_sensitivity <- map_dfr(c("fertility_rate", "pop_65_above", "aging_fertility_ratio"), ~{
+  tryCatch({
+    sensitivity_analysis_outcome(combined_data, .x, "robot_steal_jobs")
+  }, error = function(e) {
+    cat("Error in", .x, "sensitivity analysis:", e$message, "\n")
+    data.frame(demographic_var = .x, outcome = "robot_steal_jobs", threshold = NA, 
+               interaction_p = NA, significant = NA, n_high = NA, n_low = NA, model_type = "error")
+  })
+})
+
+cat("\nSensitivity Analysis Results (Complete Controls - Robot Steal Jobs):\n")
+print(kable(robot_steal_jobs_sensitivity, digits = 4, 
+            caption = "Robot Steal Jobs: Sensitivity of Interaction Effects to Different Thresholds"))
+
+# Plot for Robot Steal Jobs
+if(nrow(robot_steal_jobs_sensitivity) > 0 && !all(is.na(robot_steal_jobs_sensitivity$threshold))) {
+  robot_steal_jobs_plot <- tryCatch({
+    valid_data <- robot_steal_jobs_sensitivity %>% 
+      filter(!is.na(threshold) & !is.na(interaction_p))
+    
+    if(nrow(valid_data) > 0) {
+      ggplot(valid_data, 
+             aes(x = threshold, y = interaction_p, colour = demographic_var, shape = model_type)) +
+        geom_line(size = 1) +
+        geom_point(size = 3) +
+        geom_hline(yintercept = 0.05, linetype = "dashed", alpha = 0.7) +
+        scale_y_log10() +
+        labs(
+          title = "Sensitivity Analysis: Robot Steal Jobs",
+          subtitle = "Interaction effect p-values across thresholds with complete controls",
+          x = "Threshold for High Group (Quantile)",
+          y = "Interaction p-value (log scale)",
+          colour = "Demographic Variable",
+          shape = "Model Type",
+          caption = "Dashed line: p = 0.05 significance threshold."
+        ) +
+        theme_demographic() +
+        theme(legend.position = "bottom")
+    } else {
+      ggplot() + theme_void() + 
+        labs(title = "No valid sensitivity analysis results for Robot Steal Jobs")
+    }
+  }, error = function(e) {
+    cat("Error creating Robot Steal Jobs sensitivity plot:", e$message, "\n")
+    ggplot() + theme_void() + labs(title = "Robot Steal Jobs sensitivity plot could not be created")
+  })
+  
+  print(robot_steal_jobs_plot)
+  save_plot(robot_steal_jobs_plot, "sensitivity_robot_steal_jobs_complete_controls", width = 12, height = 8)
+}
+
+# Robot Job Losses sensitivity analysis
+cat("\n=== ROBOT JOB LOSSES SENSITIVITY ANALYSIS ===\n")
+
+robot_job_losses_sensitivity <- map_dfr(c("fertility_rate", "pop_65_above", "aging_fertility_ratio"), ~{
+  tryCatch({
+    sensitivity_analysis_outcome(combined_data, .x, "robot_job_losses")
+  }, error = function(e) {
+    cat("Error in", .x, "sensitivity analysis:", e$message, "\n")
+    data.frame(demographic_var = .x, outcome = "robot_job_losses", threshold = NA, 
+               interaction_p = NA, significant = NA, n_high = NA, n_low = NA, model_type = "error")
+  })
+})
+
+cat("\nSensitivity Analysis Results (Complete Controls - Robot Job Losses):\n")
+print(kable(robot_job_losses_sensitivity, digits = 4, 
+            caption = "Robot Job Losses: Sensitivity of Interaction Effects to Different Thresholds"))
+
+# Plot for Robot Job Losses
+if(nrow(robot_job_losses_sensitivity) > 0 && !all(is.na(robot_job_losses_sensitivity$threshold))) {
+  robot_job_losses_plot <- tryCatch({
+    valid_data <- robot_job_losses_sensitivity %>% 
+      filter(!is.na(threshold) & !is.na(interaction_p))
+    
+    if(nrow(valid_data) > 0) {
+      ggplot(valid_data, 
+             aes(x = threshold, y = interaction_p, colour = demographic_var, shape = model_type)) +
+        geom_line(size = 1) +
+        geom_point(size = 3) +
+        geom_hline(yintercept = 0.05, linetype = "dashed", alpha = 0.7) +
+        scale_y_log10() +
+        labs(
+          title = "Sensitivity Analysis: Robot Job Losses",
+          subtitle = "Interaction effect p-values across thresholds with complete controls",
+          x = "Threshold for High Group (Quantile)",
+          y = "Interaction p-value (log scale)",
+          colour = "Demographic Variable",
+          shape = "Model Type",
+          caption = "Dashed line: p = 0.05 significance threshold."
+        ) +
+        theme_demographic() +
+        theme(legend.position = "bottom")
+    } else {
+      ggplot() + theme_void() + 
+        labs(title = "No valid sensitivity analysis results for Robot Job Losses")
+    }
+  }, error = function(e) {
+    cat("Error creating Robot Job Losses sensitivity plot:", e$message, "\n")
+    ggplot() + theme_void() + labs(title = "Robot Job Losses sensitivity plot could not be created")
+  })
+  
+  print(robot_job_losses_plot)
+  save_plot(robot_job_losses_plot, "sensitivity_robot_job_losses_complete_controls", width = 12, height = 8)
+}
+
+# Robot Careful Management sensitivity analysis
+cat("\n=== ROBOT CAREFUL MANAGEMENT SENSITIVITY ANALYSIS ===\n")
+
+robot_careful_mgmt_sensitivity <- map_dfr(c("fertility_rate", "pop_65_above", "aging_fertility_ratio"), ~{
+  tryCatch({
+    sensitivity_analysis_outcome(combined_data, .x, "robot_careful_mgmt")
+  }, error = function(e) {
+    cat("Error in", .x, "sensitivity analysis:", e$message, "\n")
+    data.frame(demographic_var = .x, outcome = "robot_careful_mgmt", threshold = NA, 
+               interaction_p = NA, significant = NA, n_high = NA, n_low = NA, model_type = "error")
+  })
+})
+
+cat("\nSensitivity Analysis Results (Complete Controls - Robot Careful Management):\n")
+print(kable(robot_careful_mgmt_sensitivity, digits = 4, 
+            caption = "Robot Careful Management: Sensitivity of Interaction Effects to Different Thresholds"))
+
+# Plot for Robot Careful Management
+if(nrow(robot_careful_mgmt_sensitivity) > 0 && !all(is.na(robot_careful_mgmt_sensitivity$threshold))) {
+  robot_careful_mgmt_plot <- tryCatch({
+    valid_data <- robot_careful_mgmt_sensitivity %>% 
+      filter(!is.na(threshold) & !is.na(interaction_p))
+    
+    if(nrow(valid_data) > 0) {
+      ggplot(valid_data, 
+             aes(x = threshold, y = interaction_p, colour = demographic_var, shape = model_type)) +
+        geom_line(size = 1) +
+        geom_point(size = 3) +
+        geom_hline(yintercept = 0.05, linetype = "dashed", alpha = 0.7) +
+        scale_y_log10() +
+        labs(
+          title = "Sensitivity Analysis: Robot Careful Management",
+          subtitle = "Interaction effect p-values across thresholds with complete controls",
+          x = "Threshold for High Group (Quantile)",
+          y = "Interaction p-value (log scale)",
+          colour = "Demographic Variable",
+          shape = "Model Type",
+          caption = "Dashed line: p = 0.05 significance threshold."
+        ) +
+        theme_demographic() +
+        theme(legend.position = "bottom")
+    } else {
+      ggplot() + theme_void() + 
+        labs(title = "No valid sensitivity analysis results for Robot Careful Management")
+    }
+  }, error = function(e) {
+    cat("Error creating Robot Careful Management sensitivity plot:", e$message, "\n")
+    ggplot() + theme_void() + labs(title = "Robot Careful Management sensitivity plot could not be created")
+  })
+  
+  print(robot_careful_mgmt_plot)
+  save_plot(robot_careful_mgmt_plot, "sensitivity_robot_careful_mgmt_complete_controls", width = 12, height = 8)
+}
+
+# Combine all sensitivity results for comprehensive summary
+all_sensitivity <- bind_rows(
+  robot_good_society_sensitivity,
+  robot_steal_jobs_sensitivity,
+  robot_job_losses_sensitivity,
+  robot_careful_mgmt_sensitivity
+)
+
+cat("\n=== COMPREHENSIVE SENSITIVITY ANALYSIS SUMMARY ===\n")
+print(kable(all_sensitivity, digits = 4, 
+            caption = "Comprehensive Sensitivity Analysis: All Outcomes and Demographic Variables"))
+
+# Save comprehensive sensitivity results
+write.csv(all_sensitivity, 
+          file.path("Figures&Tables", "comprehensive_sensitivity_analysis_complete_controls.csv"), 
+          row.names = FALSE)
+```
+
+# Part 4: Comprehensive Summary and Conclusions
+
+```{r comprehensive_summary}
+cat("=== COMPREHENSIVE SUMMARY WITH COMPLETE CONTROLS ===\n")
+
+# Compile all interaction test results
+all_interaction_results <- bind_rows(
+  fertility_interaction_summary %>% mutate(demographic_var = "Total Fertility Rate (TFR)"),
+  aging_interaction_summary %>% mutate(demographic_var = "Population Ageing"),
+  transition_interaction_summary %>% mutate(demographic_var = "Demographic Transition")
+) %>%
+  arrange(demographic_var, outcome)
+
+# Create comprehensive summary table
+comprehensive_summary <- all_interaction_results %>%
+  mutate(
+    result = case_when(
+      is.na(interaction_p) ~ "Model failed",
+      interaction_p < 0.001 ~ "*** (p < 0.001)",
+      interaction_p < 0.01 ~ "** (p < 0.01)",
+      interaction_p < 0.05 ~ "* (p < 0.05)",
+      interaction_p < 0.1 ~ "† (p < 0.1)",
+      TRUE ~ "n.s."
+    ),
+    effect_size_category = case_when(
+      is.na(interaction_effect_size) ~ "Unknown",
+      abs(interaction_effect_size) < 0.2 ~ "Negligible",
+      abs(interaction_effect_size) < 0.5 ~ "Small",
+      abs(interaction_effect_size) < 0.8 ~ "Medium",
+      TRUE ~ "Large"
+    )
+  )
+
+cat("FINAL RESULTS SUMMARY (COMPLETE CONTROLS):\n")
+cat("==========================================\n")
+cat("All individual-level controls: Age, Gender, Education, Community Size, Political Orientation, Digital Skills\n")
+cat("All country-level controls: GDP per Capita, Human Development Index (IHDI)\n")
+cat("==========================================\n")
+
+results_table <- comprehensive_summary %>%
+  dplyr::select(demographic_var, outcome, interaction_p, result, 
+                effect_size_category, interaction_effect_size, model_type)
+
+print(kable(results_table, digits = 4, 
+            caption = "Comprehensive Summary: Interaction Effects with Complete Controls"))
+
+# Count successful models and significant results
+successful_models <- sum(!is.na(comprehensive_summary$interaction_p))
+total_models <- nrow(comprehensive_summary)
+significant_count <- sum(comprehensive_summary$significant == TRUE, na.rm = TRUE)
+
+cat("\n")
+cat("MODEL SUCCESS AND SIGNIFICANCE SUMMARY:\n")
+cat("=====================================\n")
+cat("Total models attempted:", total_models, "\n")
+cat("Successful models:", successful_models, "out of", total_models, 
+    "(", round(successful_models/total_models * 100, 1), "%)\n")
+if(successful_models > 0) {
+  cat("Significant interactions (p < 0.05):", significant_count, "out of", successful_models, 
+      "(", round(significant_count/successful_models * 100, 1), "%)\n")
+}
+
+# Summary by demographic variable
+cat("\nRESULTS BY DEMOGRAPHIC VARIABLE (COMPLETE CONTROLS):\n")
+cat("==================================================\n")
+
+by_demo <- comprehensive_summary %>%
+  filter(!is.na(interaction_p)) %>%
+  group_by(demographic_var) %>%
+  summarise(
+    total_tests = n(),
+    successful_tests = sum(!is.na(interaction_p)),
+    significant_tests = sum(significant, na.rm = TRUE),
+    prop_significant = round(mean(significant, na.rm = TRUE) * 100, 1),
+    .groups = "drop"
+  )
+
+print(by_demo)
+
+# Create final comprehensive visualisation
+if(exists("fertility_all_predictions") && exists("aging_all_predictions") && exists("transition_all_predictions")) {
+  
+  # Check if we have any valid predictions
+  valid_predictions <- list()
+  
+  if(!is.null(fertility_all_predictions) && nrow(fertility_all_predictions) > 0) {
+    valid_predictions[["fertility"]] <- fertility_all_predictions %>% mutate(demographic_var = "Total Fertility Rate (TFR)")
+  }
+  
+  if(!is.null(aging_all_predictions) && nrow(aging_all_predictions) > 0) {
+    valid_predictions[["aging"]] <- aging_all_predictions %>% mutate(demographic_var = "Population Ageing")
+  }
+  
+  if(!is.null(transition_all_predictions) && nrow(transition_all_predictions) > 0) {
+    valid_predictions[["transition"]] <- transition_all_predictions %>% mutate(demographic_var = "Demographic Transition")
+  }
+  
+  if(length(valid_predictions) > 0) {
+    # Set factor levels for proper ordering
+    final_comprehensive_data <- do.call(bind_rows, valid_predictions) %>%
+      mutate(
+        demographic_var = factor(demographic_var, 
+                                levels = c("Total Fertility Rate (TFR)", "Population Ageing", "Demographic Transition")),
+        outcome_label = factor(outcome_label,
+                              levels = c("Good for Society", "Steal Jobs", "Job Losses", "Careful Management"))
+      )
+    
+    final_comprehensive_plot <- final_comprehensive_data %>%
+      ggplot(aes(x = factor(year), y = predicted, 
+                 colour = demographic_group, group = demographic_group)) +
+      geom_point(position = position_dodge(width = 0.3), size = 2) +
+      geom_line(position = position_dodge(width = 0.3), size = 0.8) +
+      geom_errorbar(aes(ymin = conf.low, ymax = conf.high), 
+                    position = position_dodge(width = 0.3), 
+                    width = 0.1, size = 0.6) +
+      facet_grid(outcome_label ~ demographic_var, scales = "free_y") +
+      scale_colour_manual(values = c("Low" = "#2166AC", "High" = "#D6604D"),
+                         name = "Demographic Group") +
+      labs(
+        title = "AI/Robot Attitudes and Demographics: Changes from 2017 to 2024",
+        subtitle = "Individual & country-level variables controlled: Age, Gender, Education, Political Orientation, Community Size, Digital Skills, GDP per Capita, IHDI",
+        x = "Year",
+        y = "Predicted Attitude Score",
+        caption = "Note: Higher scores indicate stronger disagreement. Error bars: 95% CI."
+      ) +
+      theme_demographic() +
+      theme(
+        legend.position = "bottom",
+        strip.background = element_rect(fill = "grey90", colour = "grey80"),
+        strip.text = element_text(size = 9),
+        axis.text.x = element_text(angle = 0)
+      )
+    
+    print(final_comprehensive_plot)
+    save_plot(final_comprehensive_plot, "final_comprehensive_complete_controls", 
+              width = 16, height = 12)
+  }
+}
+
+# Save comprehensive results
+write.csv(comprehensive_summary, 
+          file.path("Figures&Tables", "comprehensive_results_complete_controls.csv"), 
+          row.names = FALSE)
+
+write.csv(all_sensitivity, 
+          file.path("Figures&Tables", "sensitivity_analysis_complete_controls.csv"), 
+          row.names = FALSE)
+
+cat("\n")
+cat("ANALYSIS COMPLETE - WITH COMPLETE CONTROLS\n")
+```

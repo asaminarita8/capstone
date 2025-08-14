@@ -1,0 +1,1140 @@
+---
+title: "Population Ageing and AI Attitudes: Simplified Multi-level Analysis of 2024 Data"
+author: "Analysis"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: flatly
+    highlight: tango
+---
+
+```{r setup, include=FALSE}
+# Global options for the entire document
+options(scipen=999)
+options(repos = c(CRAN = "https://cloud.r-project.org/"))
+
+knitr::opts_chunk$set(
+  echo = FALSE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 10,
+  fig.height = 6,
+  dpi = 300
+)
+
+# Create Figures&Tables directory if it doesn't exist
+if (!dir.exists("Figures&Tables")) {
+  dir.create("Figures&Tables", recursive = TRUE)
+}
+```
+
+```{r load_packages}
+# Load required packages with error handling
+packages <- c("haven", "dplyr", "stringr", "ggplot2", "lme4", "sjPlot", 
+              "effects", "tidyr", "purrr", "gridExtra", "grid", "knitr", 
+              "ggeffects", "corrplot", "broom.mixed", "viridis", "png")
+
+for(pkg in packages) {
+  if(!require(pkg, character.only = TRUE, quietly = TRUE)) {
+    install.packages(pkg, quiet = TRUE)
+    library(pkg, character.only = TRUE, quietly = TRUE)
+  }
+}
+
+# Function to add significance stars
+add_sig_stars <- function(p_values) {
+  stars <- character(length(p_values))
+  stars[p_values < 0.001] <- "***"
+  stars[p_values >= 0.001 & p_values < 0.01] <- "**"
+  stars[p_values >= 0.01 & p_values < 0.05] <- "*"
+  stars[p_values >= 0.05] <- ""
+  return(stars)
+}
+
+# Function to save tables as PNG with white background
+save_table_png <- function(table_data, filename, caption = "") {
+  # Create table plot with white background
+  p <- tableGrob(table_data, rows = NULL, theme = ttheme_minimal(
+    core = list(bg_params = list(fill = "white", col = "black")),
+    colhead = list(bg_params = list(fill = "white", col = "black", lwd = 2)),
+    rowhead = list(bg_params = list(fill = "white", col = "black"))
+  ))
+  
+  # Calculate dimensions
+  table_height <- nrow(table_data) * 0.3 + 1
+  table_width <- max(12, ncol(table_data) * 2)
+  
+  # Save as PNG with white background
+  png(file.path("Figures&Tables", paste0(filename, ".png")), 
+      width = table_width, height = table_height, units = "in", res = 300, bg = "white")
+  grid.draw(p)
+  dev.off()
+  
+  # Also save as CSV
+  write.csv(table_data, file.path("Figures&Tables", paste0(filename, ".csv")), row.names = FALSE)
+}
+
+# Function to save model equation as PNG
+save_equation_png <- function(equation_text, variables_text, filename) {
+  png(file.path("Figures&Tables", paste0(filename, "_equation.png")), 
+      width = 14, height = 10, units = "in", res = 300, bg = "white")
+  
+  par(mar = c(1,1,1,1), bg = "white")
+  plot.new()
+  
+  # Add equation
+  text(0.5, 0.85, "Model Equation:", cex = 1.4, font = 2, adj = 0.5, col = "black")
+  text(0.5, 0.75, equation_text, cex = 1.1, adj = 0.5, col = "black", family = "mono")
+  
+  # Add variable descriptions
+  text(0.5, 0.65, "Variable Descriptions:", cex = 1.4, font = 2, adj = 0.5, col = "black")
+  
+  variables_lines <- strsplit(variables_text, "\n")[[1]]
+  start_y <- 0.6
+  for(i in seq_along(variables_lines)) {
+    y_pos <- start_y - (i-1) * 0.04
+    text(0.05, y_pos, variables_lines[i], cex = 1.0, adj = 0, col = "black")
+  }
+  
+  dev.off()
+}
+
+# Function to save plots
+save_plot <- function(plot_obj, filename, width = 10, height = 6) {
+  ggsave(file.path("Figures&Tables", paste0(filename, ".png")), 
+         plot_obj, width = width, height = height, dpi = 300, bg = "white")
+  ggsave(file.path("Figures&Tables", paste0(filename, ".pdf")), 
+         plot_obj, width = width, height = height)
+}
+```
+
+```{r load_data}
+# Load the integrated dataset
+data <- read.csv("integrated_data_Eurobarometer2024.csv", stringsAsFactors = FALSE)
+
+cat("Dataset loaded successfully\n")
+cat("Number of observations:", nrow(data), "\n")
+cat("Number of variables:", ncol(data), "\n")
+cat("Countries included:", length(unique(data$isocntry)), "\n")
+```
+
+```{r data_preprocessing}
+# Data preprocessing with simplified variables
+data <- data %>%
+  # Consolidate countries first
+  mutate(
+    isocntry = case_when(
+      isocntry %in% c("GB-GBN", "GB-NIR") ~ "GB",
+      isocntry %in% c("DE-W", "DE-E") ~ "DE", 
+      TRUE ~ isocntry
+    )
+  ) %>%
+  mutate(
+    # Education variable processing
+    education_years = case_when(
+      d8 == 0 ~ NA_real_,         # Refused
+      d8 >= 2 & d8 <= 87 ~ d8,    # Normal education finishing age
+      d8 == 97 ~ 0,               # No education
+      d8 == 98 ~ NA_real_,        # Still studying
+      d8 == 99 ~ NA_real_,        # Don't know
+      TRUE ~ NA_real_
+    ),
+    
+    # Standardise GDP per capita to make coefficients interpretable
+    gdp_per_capita_2023_standardised = as.numeric(scale(gdp_per_capita_2023)),
+    
+    # Simplified gender variable: Male (reference) vs Non-male
+    gender_binary = factor(case_when(
+      d10 == 1 ~ 0,               # Male (reference)
+      d10 %in% c(2, 3) ~ 1,       # Female & Non-binary -> Non-male
+      TRUE ~ NA_real_
+    ), levels = 0:1, labels = c("Male", "Non-male")),
+    
+    # Community size factor variable (matching 2017 ordering)
+    community_size = factor(case_when(
+      p6 == 3 ~ 1,                # Rural area
+      p6 == 2 ~ 2,                # Towns and suburbs
+      p6 == 1 ~ 3,                # Cities
+      TRUE ~ NA_real_
+    ), levels = 1:3, labels = c("Rural area", "Towns and suburbs", "Cities")),
+    
+    # Political orientation (left-right scale)
+    political_lr = case_when(
+      d1r2 == 1 ~ 1,              # Left (1-2)
+      d1r2 == 2 ~ 2,              # (3-4)
+      d1r2 == 3 ~ 3,              # Centre (5-6)  
+      d1r2 == 4 ~ 4,              # (7-8)
+      d1r2 == 5 ~ 5,              # Right (9-10)
+      d1r2 == 9 ~ NA_real_,       # DK/Refusal
+      TRUE ~ NA_real_
+    ),
+    
+    # Individual digital skills variables (reverse coded so higher = more skilled)
+    digital_skills_daily = case_when(
+      qb2_1 == 1 ~ 4,             # Totally agree (high skills)
+      qb2_1 == 2 ~ 3,             # Tend to agree
+      qb2_1 == 3 ~ 2,             # Tend to disagree
+      qb2_1 == 4 ~ 1,             # Totally disagree (low skills)
+      qb2_1 == 5 ~ NA_real_,      # Not applicable
+      qb2_1 == 6 ~ NA_real_,      # Don't know
+      TRUE ~ NA_real_
+    ),
+    
+    digital_skills_job = case_when(
+      qb2_2 == 1 ~ 4,             # Totally agree (high skills)
+      qb2_2 == 2 ~ 3,             # Tend to agree
+      qb2_2 == 3 ~ 2,             # Tend to disagree
+      qb2_2 == 4 ~ 1,             # Totally disagree (low skills)
+      qb2_2 == 5 ~ NA_real_,      # Not applicable
+      qb2_2 == 6 ~ NA_real_,      # Don't know
+      TRUE ~ NA_real_
+    ),
+    
+    digital_skills_future = case_when(
+      qb2_3 == 1 ~ 4,             # Totally agree (high skills)
+      qb2_3 == 2 ~ 3,             # Tend to agree
+      qb2_3 == 3 ~ 2,             # Tend to disagree
+      qb2_3 == 4 ~ 1,             # Totally disagree (low skills)
+      qb2_3 == 5 ~ NA_real_,      # Not applicable
+      qb2_3 == 6 ~ NA_real_,      # Don't know
+      TRUE ~ NA_real_
+    ),
+    
+    digital_skills_learning = case_when(
+      qb2_4 == 1 ~ 4,             # Totally agree (high skills)
+      qb2_4 == 2 ~ 3,             # Tend to agree
+      qb2_4 == 3 ~ 2,             # Tend to disagree
+      qb2_4 == 4 ~ 1,             # Totally disagree (low skills)
+      qb2_4 == 5 ~ NA_real_,      # Not applicable
+      qb2_4 == 6 ~ NA_real_,      # Don't know
+      TRUE ~ NA_real_
+    ),
+    
+    # Dependent variables: Robot/AI attitudes (NO reverse coding - original scale)
+    robot_good_society = case_when(
+      qb6_2 == 1 ~ 1,             # Totally agree
+      qb6_2 == 2 ~ 2,             # Tend to agree
+      qb6_2 == 3 ~ 3,             # Tend to disagree
+      qb6_2 == 4 ~ 4,             # Totally disagree
+      qb6_2 == 5 ~ NA_real_,      # Don't know
+      TRUE ~ NA_real_
+    ),
+    
+    robot_steal_jobs = case_when(
+      qb6_5 == 1 ~ 1,             # Totally agree
+      qb6_5 == 2 ~ 2,             # Tend to agree
+      qb6_5 == 3 ~ 3,             # Tend to disagree
+      qb6_5 == 4 ~ 4,             # Totally disagree
+      qb6_5 == 5 ~ NA_real_,      # Don't know
+      TRUE ~ NA_real_
+    ),
+    
+    robot_job_losses = case_when(
+      qb6_1 == 1 ~ 1,             # Totally agree (job losses exceed creation)
+      qb6_1 == 2 ~ 2,             # Tend to agree
+      qb6_1 == 3 ~ 3,             # Tend to disagree (job creation exceeds losses)
+      qb6_1 == 4 ~ 4,             # Totally disagree
+      qb6_1 == 5 ~ NA_real_,      # Don't know
+      TRUE ~ NA_real_
+    ),
+    
+    robot_careful_mgmt = case_when(
+      qb6_3 == 1 ~ 1,             # Totally agree
+      qb6_3 == 2 ~ 2,             # Tend to agree
+      qb6_3 == 3 ~ 3,             # Tend to disagree
+      qb6_3 == 4 ~ 4,             # Totally disagree
+      qb6_3 == 5 ~ NA_real_,      # Don't know
+      TRUE ~ NA_real_
+    )
+  ) %>%
+  
+  # Create averaged digital skills variable
+  rowwise() %>%
+  mutate(
+    digital_skills_avg = mean(c(digital_skills_daily, digital_skills_job, 
+                               digital_skills_future, digital_skills_learning), na.rm = TRUE)
+  ) %>%
+  ungroup() %>%
+  
+  # Replace NaN with NA for cases where all digital skills are missing
+  mutate(
+    digital_skills_avg = ifelse(is.nan(digital_skills_avg), NA_real_, digital_skills_avg)
+  ) %>%
+  
+  # Create demographic ratio variable (ageing/fertility)
+  mutate(
+    aging_fertility_ratio = pop_65_above_2023 / fertility_rate_2023
+  )
+
+# Summary of key variables
+cat("Summary of simplified variables:\n")
+cat("Age: Mean =", round(mean(data$d11, na.rm = TRUE), 2), 
+    ", SD =", round(sd(data$d11, na.rm = TRUE), 2), "\n")
+cat("Digital skills average: Mean =", round(mean(data$digital_skills_avg, na.rm = TRUE), 2), 
+    ", SD =", round(sd(data$digital_skills_avg, na.rm = TRUE), 2), "\n")
+cat("Gender distribution:\n")
+print(table(data$gender_binary, useNA = "always"))
+cat("Number of countries after consolidation:", length(unique(data$isocntry)), "\n")
+```
+
+```{r data_quality_check}
+# Check missing data patterns for simplified variables
+key_vars <- c("d11", "gender_binary", "education_years", "community_size", "political_lr", 
+              "digital_skills_avg", "robot_good_society", "robot_steal_jobs", 
+              "robot_job_losses", "robot_careful_mgmt")
+
+missing_pct <- data %>%
+  select(all_of(key_vars)) %>%
+  summarise_all(~round(mean(is.na(.)) * 100, 2)) %>%
+  gather(variable, missing_percentage) %>%
+  arrange(desc(missing_percentage))
+
+cat("Missing data percentages for key variables:\n")
+print(kable(missing_pct, 
+            col.names = c("Variable", "Missing %"),
+            caption = "Missing Data Summary"))
+
+# Save missing data summary
+save_table_png(missing_pct, "2024_simplified_missing_data", "Missing Data Summary")
+```
+
+# Total Fertility Rate Model
+
+**Model Equation:**
+Y_ij = β₀ + β₁Age_ij + β₂Gender_ij + β₃Education_ij + β₄Community_ij + β₅Political_ij + β₆DigitalSkills_ij + γ₁TotalFertilityRate_j + γ₂GDP_j + γ₃IHDI_j + u₀j + ε_ij
+
+**Variable Descriptions:**
+
+* **Y**: Individual attitude score (1=Totally agree, 2=Tend to agree, 3=Tend to disagree, 4=Totally disagree)
+
+* **Age**: Individual's age in years
+
+* **Gender**: Individual's gender (reference: Male)
+
+* **Education**: Years of education completed
+
+* **Community**: Community size (reference: Rural area)
+
+* **Political**: Political orientation on left-right scale (1=Left, 5=Right)
+
+* **DigitalSkills**: Average digital skills score (1=Low, 4=High)
+
+* **TotalFertilityRate**: Country-level total fertility rate (births per woman)
+
+* **GDP**: Country-level GDP per capita (standardised)
+
+* **IHDI**: Country-level Inequality-adjusted Human Development Index
+
+* **u₀j**: Country-level random intercept
+
+* **ε_ij**: Individual-level residual
+
+```{r case1_model_prep}
+# Total Fertility Rate Model: Country-level variables = fertility_rate, GDP, IHDI
+# Prepare data for models
+
+prepare_case1_data <- function(data, outcome_var) {
+  data %>%
+    filter(!is.na(!!sym(outcome_var))) %>%
+    filter(!is.na(d11), !is.na(gender_binary), !is.na(education_years),
+           !is.na(community_size), !is.na(political_lr), !is.na(digital_skills_avg),
+           !is.na(fertility_rate_2023), !is.na(gdp_per_capita_2023_standardised), !is.na(ihdi_2023))
+}
+
+# Prepare datasets for each outcome
+case1_good_society <- prepare_case1_data(data, "robot_good_society")
+case1_steal_jobs <- prepare_case1_data(data, "robot_steal_jobs")
+case1_job_losses <- prepare_case1_data(data, "robot_job_losses")
+case1_careful_mgmt <- prepare_case1_data(data, "robot_careful_mgmt")
+
+cat("Total Fertility Rate Model Sample sizes:\n")
+cat("Good for Society:", nrow(case1_good_society), "\n")
+cat("Steal Jobs:", nrow(case1_steal_jobs), "\n")
+cat("Job Losses:", nrow(case1_job_losses), "\n")
+cat("Careful Management:", nrow(case1_careful_mgmt), "\n")
+```
+
+```{r case1_models}
+# Helper function to format model tables and extract model performance
+format_model_table <- function(model, caption, table_filename, equation_filename = NULL) {
+  model_summary <- broom.mixed::tidy(model, conf.int = TRUE, conf.level = 0.95)
+  
+  # Calculate p-values if not present
+  if(!"p.value" %in% names(model_summary)) {
+    model_summary$p.value <- 2 * pnorm(-abs(model_summary$statistic))
+  }
+  
+  formatted_table <- model_summary %>%
+    filter(effect == "fixed") %>%
+    mutate(
+      estimate = round(estimate, 3),
+      std.error = round(std.error, 3),
+      conf.low = round(conf.low, 3),
+      conf.high = round(conf.high, 3),
+      p.value = round(p.value, 4),
+      CI = paste0("[", conf.low, ", ", conf.high, "]"),
+      Significance = add_sig_stars(p.value),
+      p_value_formatted = paste0(sprintf("%.4f", p.value), Significance),
+      # Convert technical terms to readable names
+      term = case_when(
+        term == "(Intercept)" ~ "Intercept",
+        term == "d11" ~ "Age",
+        term == "gender_binaryNon-male" ~ "Gender: Non-male",
+        term == "education_years" ~ "Education Years",
+        term == "community_sizeTowns and suburbs" ~ "Community: Towns/Suburbs",
+        term == "community_sizeCities" ~ "Community: Cities",
+        term == "political_lr" ~ "Political Orientation",
+        term == "digital_skills_avg" ~ "Digital Skills (Average)",
+        term == "fertility_rate_2023" ~ "Total Fertility Rate",
+        term == "gdp_per_capita_2023_standardised" ~ "GDP per Capita (Standardised)",
+        term == "ihdi_2023" ~ "IHDI",
+        TRUE ~ term
+      )
+    ) %>%
+    select(term, estimate, std.error, CI, p_value_formatted)
+  
+  names(formatted_table) <- c("Predictor", "Estimate", "Std_Error", "CI_95", "p_value")
+  
+  # Extract model performance statistics
+  re_vars <- as.data.frame(VarCorr(model))
+  country_var <- re_vars$vcov[re_vars$grp == "isocntry"]
+  residual_var <- re_vars$vcov[re_vars$grp == "Residual"]
+  
+  icc <- country_var / (country_var + residual_var)
+  aic_val <- AIC(model)
+  
+  # Calculate R-squared
+  r2_vals <- tryCatch({
+    performance::r2(model)
+  }, error = function(e) {
+    list(R2_marginal = NA, R2_conditional = NA)
+  })
+  
+  # Create performance table
+  performance_table <- data.frame(
+    Predictor = c("Random Effects", "σ²", "τ₀₀ (Country)", "ICC", "Observations", 
+                  "Marginal R²", "Conditional R²", "AIC"),
+    Estimate = c("", sprintf("%.3f", residual_var), sprintf("%.3f", country_var), 
+                 sprintf("%.3f", icc), sprintf("%d", nobs(model)),
+                 sprintf("%.3f", ifelse(is.null(r2_vals$R2_marginal), NA, r2_vals$R2_marginal)),
+                 sprintf("%.3f", ifelse(is.null(r2_vals$R2_conditional), NA, r2_vals$R2_conditional)),
+                 sprintf("%.3f", aic_val)),
+    Std_Error = rep("", 8),
+    CI_95 = rep("", 8),
+    p_value = rep("", 8),
+    stringsAsFactors = FALSE
+  )
+  
+  # Combine tables
+  combined_table <- rbind(
+    formatted_table,
+    data.frame(
+      Predictor = "",
+      Estimate = "",
+      Std_Error = "",
+      CI_95 = "",
+      p_value = "",
+      stringsAsFactors = FALSE
+    ),
+    performance_table
+  )
+  
+  # Save equation if filename provided
+  if(!is.null(equation_filename)) {
+    equation_text <- "Y_ij = β₀ + β₁Age_ij + β₂Gender_ij + β₃Education_ij + β₄Community_ij + β₅Political_ij + β₆DigitalSkills_ij + γ₁TotalFertilityRate_j + γ₂GDP_j + γ₃IHDI_j + u₀j + ε_ij"
+    
+    variables_text <- "• Y: Individual attitude score (1=Totally agree, 2=Tend to agree, 3=Tend to disagree, 4=Totally disagree)
+• Age: Individual's age in years
+• Gender: Individual's gender (reference: Male)  
+• Education: Years of education completed
+• Community: Community size (reference: Rural area)
+• Political: Political orientation on left-right scale (1=Left, 5=Right)
+• DigitalSkills: Average digital skills score (1=Low, 4=High)
+• TotalFertilityRate: Country-level total fertility rate (births per woman)
+• GDP: Country-level GDP per capita (standardised)
+• IHDI: Country-level Inequality-adjusted Human Development Index
+• u₀j: Country-level random intercept
+• ε_ij: Individual-level residual"
+    
+    save_equation_png(equation_text, variables_text, equation_filename)
+  }
+  
+  # Save table as PNG
+  save_table_png(combined_table, table_filename, caption)
+  
+  # Return formatted table for display
+  display_table <- formatted_table
+  names(display_table) <- c("Predictor", "Estimate", "Std. Error", "95% CI", "p-value")
+  
+  return(kable(display_table, caption = caption))
+}
+
+# Total Fertility Rate Models
+
+# Save equation for this model type
+equation_text <- "Y_ij = β₀ + β₁Age_ij + β₂Gender_ij + β₃Education_ij + β₄Community_ij + β₅Political_ij + β₆DigitalSkills_ij + γ₁TotalFertilityRate_j + γ₂GDP_j + γ₃IHDI_j + u₀j + ε_ij"
+
+variables_text <- "• Y: Individual attitude score (1=Totally agree, 2=Tend to agree, 3=Tend to disagree, 4=Totally disagree)
+• Age: Individual's age in years
+• Gender: Individual's gender (reference: Male)
+• Education: Years of education completed
+• Community: Community size (reference: Rural area)
+• Political: Political orientation on left-right scale (1=Left, 5=Right)
+• DigitalSkills: Average digital skills score (1=Low, 4=High)
+• TotalFertilityRate: Country-level total fertility rate (births per woman)
+• GDP: Country-level GDP per capita (standardised)
+• IHDI: Country-level Inequality-adjusted Human Development Index
+• u₀j: Country-level random intercept
+• ε_ij: Individual-level residual"
+
+save_equation_png(equation_text, variables_text, "2024_total_fertility_rate_model")
+
+# Model 1: Robot/AI Good for Society
+case1_model1 <- lmer(robot_good_society ~ d11 + gender_binary + education_years + community_size + 
+                     political_lr + digital_skills_avg + fertility_rate_2023 + 
+                     gdp_per_capita_2023_standardised + ihdi_2023 +
+                     (1 | isocntry), data = case1_good_society)
+
+print("### Total Fertility Rate Model: Robot/AI Good for Society")
+format_model_table(case1_model1, "Total Fertility Rate Model: Robot/AI Good for Society", 
+                  "2024_case1_model1_good_society")
+
+# Model 2: Robot/AI Steal Jobs
+case1_model2 <- lmer(robot_steal_jobs ~ d11 + gender_binary + education_years + community_size + 
+                     political_lr + digital_skills_avg + fertility_rate_2023 + 
+                     gdp_per_capita_2023_standardised + ihdi_2023 +
+                     (1 | isocntry), data = case1_steal_jobs)
+
+print("### Total Fertility Rate Model: Robot/AI Steal Jobs")
+format_model_table(case1_model2, "Total Fertility Rate Model: Robot/AI Steal Jobs", 
+                  "2024_case1_model2_steal_jobs")
+
+# Model 3: Robot/AI Job Losses
+case1_model3 <- lmer(robot_job_losses ~ d11 + gender_binary + education_years + community_size + 
+                     political_lr + digital_skills_avg + fertility_rate_2023 + 
+                     gdp_per_capita_2023_standardised + ihdi_2023 +
+                     (1 | isocntry), data = case1_job_losses)
+
+print("### Total Fertility Rate Model: Robot/AI Job Losses")
+format_model_table(case1_model3, "Total Fertility Rate Model: Robot/AI Job Losses", 
+                  "2024_case1_model3_job_losses")
+
+# Model 4: Robot/AI Careful Management
+case1_model4 <- lmer(robot_careful_mgmt ~ d11 + gender_binary + education_years + community_size + 
+                     political_lr + digital_skills_avg + fertility_rate_2023 + 
+                     gdp_per_capita_2023_standardised + ihdi_2023 +
+                     (1 | isocntry), data = case1_careful_mgmt)
+
+print("### Total Fertility Rate Model: Robot/AI Careful Management")
+format_model_table(case1_model4, "Total Fertility Rate Model: Robot/AI Careful Management", 
+                  "2024_case1_model4_careful_mgmt")
+```
+
+# Ageing Population Model
+
+**Model Equation:**
+Y_ij = β₀ + β₁Age_ij + β₂Gender_ij + β₃Education_ij + β₄Community_ij + β₅Political_ij + β₆DigitalSkills_ij + γ₁PopulationAgeing_j + γ₂GDP_j + γ₃IHDI_j + u₀j + ε_ij
+
+**Variable Descriptions:**
+
+* **Y**: Individual attitude score (1=Totally agree, 2=Tend to agree, 3=Tend to disagree, 4=Totally disagree)
+
+* **Age**: Individual's age in years
+
+* **Gender**: Individual's gender (reference: Male)
+
+* **Education**: Years of education completed
+
+* **Community**: Community size (reference: Rural area)
+
+* **Political**: Political orientation on left-right scale (1=Left, 5=Right)
+
+* **DigitalSkills**: Average digital skills score (1=Low, 4=High)
+
+* **PopulationAgeing**: Country-level percentage of population aged 65+
+
+* **GDP**: Country-level GDP per capita (standardised)
+
+* **IHDI**: Country-level Inequality-adjusted Human Development Index
+
+* **u₀j**: Country-level random intercept
+
+* **ε_ij**: Individual-level residual
+
+```{r case2_model_prep}
+# Ageing Population Model: Country-level variables = pop_65_above, GDP, IHDI
+# Prepare data for models
+
+prepare_case2_data <- function(data, outcome_var) {
+  data %>%
+    filter(!is.na(!!sym(outcome_var))) %>%
+    filter(!is.na(d11), !is.na(gender_binary), !is.na(education_years),
+           !is.na(community_size), !is.na(political_lr), !is.na(digital_skills_avg),
+           !is.na(pop_65_above_2023), !is.na(gdp_per_capita_2023_standardised), !is.na(ihdi_2023))
+}
+
+# Prepare datasets for each outcome
+case2_good_society <- prepare_case2_data(data, "robot_good_society")
+case2_steal_jobs <- prepare_case2_data(data, "robot_steal_jobs")
+case2_job_losses <- prepare_case2_data(data, "robot_job_losses")
+case2_careful_mgmt <- prepare_case2_data(data, "robot_careful_mgmt")
+
+cat("Ageing Population Model Sample sizes:\n")
+cat("Good for Society:", nrow(case2_good_society), "\n")
+cat("Steal Jobs:", nrow(case2_steal_jobs), "\n")
+cat("Job Losses:", nrow(case2_job_losses), "\n")
+cat("Careful Management:", nrow(case2_careful_mgmt), "\n")
+```
+
+```{r case2_models}
+# Helper function for Ageing Population models
+format_model_table_case2 <- function(model, caption, table_filename, equation_filename = NULL) {
+  model_summary <- broom.mixed::tidy(model, conf.int = TRUE, conf.level = 0.95)
+  
+  # Calculate p-values if not present
+  if(!"p.value" %in% names(model_summary)) {
+    model_summary$p.value <- 2 * pnorm(-abs(model_summary$statistic))
+  }
+  
+  formatted_table <- model_summary %>%
+    filter(effect == "fixed") %>%
+    mutate(
+      estimate = round(estimate, 3),
+      std.error = round(std.error, 3),
+      conf.low = round(conf.low, 3),
+      conf.high = round(conf.high, 3),
+      p.value = round(p.value, 4),
+      CI = paste0("[", conf.low, ", ", conf.high, "]"),
+      Significance = add_sig_stars(p.value),
+      p_value_formatted = paste0(sprintf("%.4f", p.value), Significance),
+      # Convert technical terms to readable names
+      term = case_when(
+        term == "(Intercept)" ~ "Intercept",
+        term == "d11" ~ "Age",
+        term == "gender_binaryNon-male" ~ "Gender: Non-male",
+        term == "education_years" ~ "Education Years",
+        term == "community_sizeTowns and suburbs" ~ "Community: Towns/Suburbs",
+        term == "community_sizeCities" ~ "Community: Cities",
+        term == "political_lr" ~ "Political Orientation",
+        term == "digital_skills_avg" ~ "Digital Skills (Average)",
+        term == "pop_65_above_2023" ~ "Population Ageing",
+        term == "gdp_per_capita_2023_standardised" ~ "GDP per Capita (Standardised)",
+        term == "ihdi_2023" ~ "IHDI",
+        TRUE ~ term
+      )
+    ) %>%
+    select(term, estimate, std.error, CI, p_value_formatted)
+  
+  names(formatted_table) <- c("Predictor", "Estimate", "Std_Error", "CI_95", "p_value")
+  
+  # Extract model performance statistics
+  re_vars <- as.data.frame(VarCorr(model))
+  country_var <- re_vars$vcov[re_vars$grp == "isocntry"]
+  residual_var <- re_vars$vcov[re_vars$grp == "Residual"]
+  
+  icc <- country_var / (country_var + residual_var)
+  aic_val <- AIC(model)
+  
+  # Calculate R-squared
+  r2_vals <- tryCatch({
+    performance::r2(model)
+  }, error = function(e) {
+    list(R2_marginal = NA, R2_conditional = NA)
+  })
+  
+  # Create performance table
+  performance_table <- data.frame(
+    Predictor = c("Random Effects", "σ²", "τ₀₀ (Country)", "ICC", "Observations", 
+                  "Marginal R²", "Conditional R²", "AIC"),
+    Estimate = c("", sprintf("%.3f", residual_var), sprintf("%.3f", country_var), 
+                 sprintf("%.3f", icc), sprintf("%d", nobs(model)),
+                 sprintf("%.3f", ifelse(is.null(r2_vals$R2_marginal), NA, r2_vals$R2_marginal)),
+                 sprintf("%.3f", ifelse(is.null(r2_vals$R2_conditional), NA, r2_vals$R2_conditional)),
+                 sprintf("%.3f", aic_val)),
+    Std_Error = rep("", 8),
+    CI_95 = rep("", 8),
+    p_value = rep("", 8),
+    stringsAsFactors = FALSE
+  )
+  
+  # Combine tables
+  combined_table <- rbind(
+    formatted_table,
+    data.frame(
+      Predictor = "",
+      Estimate = "",
+      Std_Error = "",
+      CI_95 = "",
+      p_value = "",
+      stringsAsFactors = FALSE
+    ),
+    performance_table
+  )
+  
+  # Save equation if filename provided
+  if(!is.null(equation_filename)) {
+    equation_text <- "Y_ij = β₀ + β₁Age_ij + β₂Gender_ij + β₃Education_ij + β₄Community_ij + β₅Political_ij + β₆DigitalSkills_ij + γ₁PopulationAgeing_j + γ₂GDP_j + γ₃IHDI_j + u₀j + ε_ij"
+    
+    variables_text <- "• Y: Individual attitude score (1=Totally agree, 2=Tend to agree, 3=Tend to disagree, 4=Totally disagree)
+• Age: Individual's age in years
+• Gender: Individual's gender (reference: Male)
+• Education: Years of education completed
+• Community: Community size (reference: Rural area)
+• Political: Political orientation on left-right scale (1=Left, 5=Right)
+• DigitalSkills: Average digital skills score (1=Low, 4=High)
+• PopulationAgeing: Country-level percentage of population aged 65+
+• GDP: Country-level GDP per capita (standardised)
+• IHDI: Country-level Inequality-adjusted Human Development Index
+• u₀j: Country-level random intercept
+• ε_ij: Individual-level residual"
+    
+    save_equation_png(equation_text, variables_text, equation_filename)
+  }
+  
+  # Save table as PNG
+  save_table_png(combined_table, table_filename, caption)
+  
+  # Return formatted table for display
+  display_table <- formatted_table
+  names(display_table) <- c("Predictor", "Estimate", "Std. Error", "95% CI", "p-value")
+  
+  return(kable(display_table, caption = caption))
+}
+
+# Ageing Population Models
+
+# Save equation for this model type
+equation_text <- "Y_ij = β₀ + β₁Age_ij + β₂Gender_ij + β₃Education_ij + β₄Community_ij + β₅Political_ij + β₆DigitalSkills_ij + γ₁PopulationAgeing_j + γ₂GDP_j + γ₃IHDI_j + u₀j + ε_ij"
+
+variables_text <- "• Y: Individual attitude score (1=Totally agree, 2=Tend to agree, 3=Tend to disagree, 4=Totally disagree)
+• Age: Individual's age in years
+• Gender: Individual's gender (reference: Male)
+• Education: Years of education completed
+• Community: Community size (reference: Rural area)
+• Political: Political orientation on left-right scale (1=Left, 5=Right)
+• DigitalSkills: Average digital skills score (1=Low, 4=High)
+• PopulationAgeing: Country-level percentage of population aged 65+
+• GDP: Country-level GDP per capita (standardised)
+• IHDI: Country-level Inequality-adjusted Human Development Index
+• u₀j: Country-level random intercept
+• ε_ij: Individual-level residual"
+
+save_equation_png(equation_text, variables_text, "2024_ageing_population_model")
+
+# Model 1: Robot/AI Good for Society
+case2_model1 <- lmer(robot_good_society ~ d11 + gender_binary + education_years + community_size + 
+                     political_lr + digital_skills_avg + pop_65_above_2023 + 
+                     gdp_per_capita_2023_standardised + ihdi_2023 +
+                     (1 | isocntry), data = case2_good_society)
+
+print("### Ageing Population Model: Robot/AI Good for Society")
+format_model_table_case2(case2_model1, "Ageing Population Model: Robot/AI Good for Society", 
+                        "2024_case2_model1_good_society")
+
+# Model 2: Robot/AI Steal Jobs
+case2_model2 <- lmer(robot_steal_jobs ~ d11 + gender_binary + education_years + community_size + 
+                     political_lr + digital_skills_avg + pop_65_above_2023 + 
+                     gdp_per_capita_2023_standardised + ihdi_2023 +
+                     (1 | isocntry), data = case2_steal_jobs)
+
+print("### Ageing Population Model: Robot/AI Steal Jobs")
+format_model_table_case2(case2_model2, "Ageing Population Model: Robot/AI Steal Jobs", 
+                        "2024_case2_model2_steal_jobs")
+
+# Model 3: Robot/AI Job Losses
+case2_model3 <- lmer(robot_job_losses ~ d11 + gender_binary + education_years + community_size + 
+                     political_lr + digital_skills_avg + pop_65_above_2023 + 
+                     gdp_per_capita_2023_standardised + ihdi_2023 +
+                     (1 | isocntry), data = case2_job_losses)
+
+print("### Ageing Population Model: Robot/AI Job Losses")
+format_model_table_case2(case2_model3, "Ageing Population Model: Robot/AI Job Losses", 
+                        "2024_case2_model3_job_losses")
+
+# Model 4: Robot/AI Careful Management
+case2_model4 <- lmer(robot_careful_mgmt ~ d11 + gender_binary + education_years + community_size + 
+                     political_lr + digital_skills_avg + pop_65_above_2023 + 
+                     gdp_per_capita_2023_standardised + ihdi_2023 +
+                     (1 | isocntry), data = case2_careful_mgmt)
+
+print("### Ageing Population Model: Robot/AI Careful Management")
+format_model_table_case2(case2_model4, "Ageing Population Model: Robot/AI Careful Management", 
+                        "2024_case2_model4_careful_mgmt")
+```
+
+# Demographic Transition Model
+
+**Model Equation:**
+Y_ij = β₀ + β₁Age_ij + β₂Gender_ij + β₃Education_ij + β₄Community_ij + β₅Political_ij + β₆DigitalSkills_ij + γ₁AgeingFertilityRatio_j + γ₂GDP_j + γ₃IHDI_j + u₀j + ε_ij
+
+**Variable Descriptions:**
+
+* **Y**: Individual attitude score (1=Totally agree, 2=Tend to agree, 3=Tend to disagree, 4=Totally disagree)
+
+* **Age**: Individual's age in years
+
+* **Gender**: Individual's gender (reference: Male)
+
+* **Education**: Years of education completed
+
+* **Community**: Community size (reference: Rural area)
+
+* **Political**: Political orientation on left-right scale (1=Left, 5=Right)
+
+* **DigitalSkills**: Average digital skills score (1=Low, 4=High)
+
+* **AgeingFertilityRatio**: Country-level ratio of population aged 65+ to total fertility rate
+
+* **GDP**: Country-level GDP per capita (standardised)
+
+* **IHDI**: Country-level Inequality-adjusted Human Development Index
+
+* **u₀j**: Country-level random intercept
+
+* **ε_ij**: Individual-level residual
+
+```{r case3_model_prep}
+# Demographic Transition Model: Country-level variables = aging_fertility_ratio, GDP, IHDI
+# Prepare data for models
+
+prepare_case3_data <- function(data, outcome_var) {
+  data %>%
+    filter(!is.na(!!sym(outcome_var))) %>%
+    filter(!is.na(d11), !is.na(gender_binary), !is.na(education_years),
+           !is.na(community_size), !is.na(political_lr), !is.na(digital_skills_avg),
+           !is.na(aging_fertility_ratio), !is.na(gdp_per_capita_2023_standardised), !is.na(ihdi_2023))
+}
+
+# Prepare datasets for each outcome
+case3_good_society <- prepare_case3_data(data, "robot_good_society")
+case3_steal_jobs <- prepare_case3_data(data, "robot_steal_jobs")
+case3_job_losses <- prepare_case3_data(data, "robot_job_losses")
+case3_careful_mgmt <- prepare_case3_data(data, "robot_careful_mgmt")
+
+cat("Demographic Transition Model Sample sizes:\n")
+cat("Good for Society:", nrow(case3_good_society), "\n")
+cat("Steal Jobs:", nrow(case3_steal_jobs), "\n")
+cat("Job Losses:", nrow(case3_job_losses), "\n")
+cat("Careful Management:", nrow(case3_careful_mgmt), "\n")
+
+# Display demographic transition ratio statistics
+cat("\nDemographic Transition Ratio (Ageing/Fertility) Statistics:\n")
+cat("Mean:", round(mean(data$aging_fertility_ratio, na.rm = TRUE), 2), "\n")
+cat("SD:", round(sd(data$aging_fertility_ratio, na.rm = TRUE), 2), "\n")
+cat("Range:", round(min(data$aging_fertility_ratio, na.rm = TRUE), 2), "-", 
+    round(max(data$aging_fertility_ratio, na.rm = TRUE), 2), "\n")
+```
+
+```{r case3_models}
+# Helper function for Demographic Transition models
+format_model_table_case3 <- function(model, caption, table_filename, equation_filename = NULL) {
+  model_summary <- broom.mixed::tidy(model, conf.int = TRUE, conf.level = 0.95)
+  
+  # Calculate p-values if not present
+  if(!"p.value" %in% names(model_summary)) {
+    model_summary$p.value <- 2 * pnorm(-abs(model_summary$statistic))
+  }
+  
+  formatted_table <- model_summary %>%
+    filter(effect == "fixed") %>%
+    mutate(
+      estimate = round(estimate, 3),
+      std.error = round(std.error, 3),
+      conf.low = round(conf.low, 3),
+      conf.high = round(conf.high, 3),
+      p.value = round(p.value, 4),
+      CI = paste0("[", conf.low, ", ", conf.high, "]"),
+      Significance = add_sig_stars(p.value),
+      p_value_formatted = paste0(sprintf("%.4f", p.value), Significance),
+      # Convert technical terms to readable names
+      term = case_when(
+        term == "(Intercept)" ~ "Intercept",
+        term == "d11" ~ "Age",
+        term == "gender_binaryNon-male" ~ "Gender: Non-male",
+        term == "education_years" ~ "Education Years",
+        term == "community_sizeTowns and suburbs" ~ "Community: Towns/Suburbs",
+        term == "community_sizeCities" ~ "Community: Cities",
+        term == "political_lr" ~ "Political Orientation",
+        term == "digital_skills_avg" ~ "Digital Skills (Average)",
+        term == "aging_fertility_ratio" ~ "Ageing-Fertility Ratio",
+        term == "gdp_per_capita_2023_standardised" ~ "GDP per Capita (Standardised)",
+        term == "ihdi_2023" ~ "IHDI",
+        TRUE ~ term
+      )
+    ) %>%
+    select(term, estimate, std.error, CI, p_value_formatted)
+  
+  names(formatted_table) <- c("Predictor", "Estimate", "Std_Error", "CI_95", "p_value")
+  
+  # Extract model performance statistics
+  re_vars <- as.data.frame(VarCorr(model))
+  country_var <- re_vars$vcov[re_vars$grp == "isocntry"]
+  residual_var <- re_vars$vcov[re_vars$grp == "Residual"]
+  
+  icc <- country_var / (country_var + residual_var)
+  aic_val <- AIC(model)
+  
+  # Calculate R-squared
+  r2_vals <- tryCatch({
+    performance::r2(model)
+  }, error = function(e) {
+    list(R2_marginal = NA, R2_conditional = NA)
+  })
+  
+  # Create performance table
+  performance_table <- data.frame(
+    Predictor = c("Random Effects", "σ²", "τ₀₀ (Country)", "ICC", "Observations", 
+                  "Marginal R²", "Conditional R²", "AIC"),
+    Estimate = c("", sprintf("%.3f", residual_var), sprintf("%.3f", country_var), 
+                 sprintf("%.3f", icc), sprintf("%d", nobs(model)),
+                 sprintf("%.3f", ifelse(is.null(r2_vals$R2_marginal), NA, r2_vals$R2_marginal)),
+                 sprintf("%.3f", ifelse(is.null(r2_vals$R2_conditional), NA, r2_vals$R2_conditional)),
+                 sprintf("%.3f", aic_val)),
+    Std_Error = rep("", 8),
+    CI_95 = rep("", 8),
+    p_value = rep("", 8),
+    stringsAsFactors = FALSE
+  )
+  
+  # Combine tables
+  combined_table <- rbind(
+    formatted_table,
+    data.frame(
+      Predictor = "",
+      Estimate = "",
+      Std_Error = "",
+      CI_95 = "",
+      p_value = "",
+      stringsAsFactors = FALSE
+    ),
+    performance_table
+  )
+  
+  # Save equation if filename provided
+  if(!is.null(equation_filename)) {
+    equation_text <- "Y_ij = β₀ + β₁Age_ij + β₂Gender_ij + β₃Education_ij + β₄Community_ij + β₅Political_ij + β₆DigitalSkills_ij + γ₁AgeingFertilityRatio_j + γ₂GDP_j + γ₃IHDI_j + u₀j + ε_ij"
+    
+    variables_text <- "• Y: Individual attitude score (1=Totally agree, 2=Tend to agree, 3=Tend to disagree, 4=Totally disagree)
+• Age: Individual's age in years
+• Gender: Individual's gender (reference: Male)
+• Education: Years of education completed
+• Community: Community size (reference: Rural area)
+• Political: Political orientation on left-right scale (1=Left, 5=Right)
+• DigitalSkills: Average digital skills score (1=Low, 4=High)
+• AgeingFertilityRatio: Country-level ratio of population aged 65+ to total fertility rate
+• GDP: Country-level GDP per capita (standardised)
+• IHDI: Country-level Inequality-adjusted Human Development Index
+• u₀j: Country-level random intercept
+• ε_ij: Individual-level residual"
+    
+    save_equation_png(equation_text, variables_text, equation_filename)
+  }
+  
+  # Save table as PNG
+  save_table_png(combined_table, table_filename, caption)
+  
+  # Return formatted table for display
+  display_table <- formatted_table
+  names(display_table) <- c("Predictor", "Estimate", "Std. Error", "95% CI", "p-value")
+  
+  return(kable(display_table, caption = caption))
+}
+
+# Demographic Transition Models
+
+# Save equation for this model type
+equation_text <- "Y_ij = β₀ + β₁Age_ij + β₂Gender_ij + β₃Education_ij + β₄Community_ij + β₅Political_ij + β₆DigitalSkills_ij + γ₁AgeingFertilityRatio_j + γ₂GDP_j + γ₃IHDI_j + u₀j + ε_ij"
+
+variables_text <- "• Y: Individual attitude score (1=Totally agree, 2=Tend to agree, 3=Tend to disagree, 4=Totally disagree)
+• Age: Individual's age in years
+• Gender: Individual's gender (reference: Male)
+• Education: Years of education completed
+• Community: Community size (reference: Rural area)
+• Political: Political orientation on left-right scale (1=Left, 5=Right)
+• DigitalSkills: Average digital skills score (1=Low, 4=High)
+• AgeingFertilityRatio: Country-level ratio of population aged 65+ to total fertility rate
+• GDP: Country-level GDP per capita (standardised)
+• IHDI: Country-level Inequality-adjusted Human Development Index
+• u₀j: Country-level random intercept
+• ε_ij: Individual-level residual"
+
+save_equation_png(equation_text, variables_text, "2024_demographic_transition_model")
+
+# Model 1: Robot/AI Good for Society
+case3_model1 <- lmer(robot_good_society ~ d11 + gender_binary + education_years + community_size + 
+                     political_lr + digital_skills_avg + aging_fertility_ratio + 
+                     gdp_per_capita_2023_standardised + ihdi_2023 +
+                     (1 | isocntry), data = case3_good_society)
+
+print("### Demographic Transition Model: Robot/AI Good for Society")
+format_model_table_case3(case3_model1, "Demographic Transition Model: Robot/AI Good for Society", 
+                        "2024_case3_model1_good_society")
+
+# Model 2: Robot/AI Steal Jobs
+case3_model2 <- lmer(robot_steal_jobs ~ d11 + gender_binary + education_years + community_size + 
+                     political_lr + digital_skills_avg + aging_fertility_ratio + 
+                     gdp_per_capita_2023_standardised + ihdi_2023 +
+                     (1 | isocntry), data = case3_steal_jobs)
+
+print("### Demographic Transition Model: Robot/AI Steal Jobs")
+format_model_table_case3(case3_model2, "Demographic Transition Model: Robot/AI Steal Jobs", 
+                        "2024_case3_model2_steal_jobs")
+
+# Model 3: Robot/AI Job Losses
+case3_model3 <- lmer(robot_job_losses ~ d11 + gender_binary + education_years + community_size + 
+                     political_lr + digital_skills_avg + aging_fertility_ratio + 
+                     gdp_per_capita_2023_standardised + ihdi_2023 +
+                     (1 | isocntry), data = case3_job_losses)
+
+print("### Demographic Transition Model: Robot/AI Job Losses")
+format_model_table_case3(case3_model3, "Demographic Transition Model: Robot/AI Job Losses", 
+                        "2024_case3_model3_job_losses")
+
+# Model 4: Robot/AI Careful Management
+case3_model4 <- lmer(robot_careful_mgmt ~ d11 + gender_binary + education_years + community_size + 
+                     political_lr + digital_skills_avg + aging_fertility_ratio + 
+                     gdp_per_capita_2023_standardised + ihdi_2023 +
+                     (1 | isocntry), data = case3_careful_mgmt)
+
+print("### Demographic Transition Model: Robot/AI Careful Management")
+format_model_table_case3(case3_model4, "Demographic Transition Model: Robot/AI Careful Management", 
+                        "2024_case3_model4_careful_mgmt")
+```
+
+# Summary Comparison Across Models
+
+```{r summary_comparison}
+# Extract key coefficients from all models for comparison
+extract_demographic_effects <- function(models, case_name, demographic_var) {
+  results <- data.frame()
+  
+  outcome_names <- c("Good for Society", "Steal Jobs", "Job Losses", "Careful Management")
+  
+  for(i in 1:length(models)) {
+    model <- models[[i]]
+    outcome <- outcome_names[i]
+    
+    tryCatch({
+      # Get tidy results
+      tidy_results <- broom.mixed::tidy(model, conf.int = TRUE, conf.level = 0.95)
+      
+      # Calculate p-values if not present
+      if(!"p.value" %in% names(tidy_results)) {
+        tidy_results$p.value <- 2 * pnorm(-abs(tidy_results$statistic))
+      }
+      
+      # Extract demographic variable effect
+      demo_row <- tidy_results[tidy_results$term == demographic_var, ]
+      
+      if(nrow(demo_row) > 0) {
+        results <- rbind(results, data.frame(
+          Model = case_name,
+          Outcome = outcome,
+          Demographic_Variable = demographic_var,
+          Estimate = as.numeric(demo_row$estimate),
+          SE = as.numeric(demo_row$std.error),
+          p_value = as.numeric(demo_row$p.value),
+          Significant = as.logical(demo_row$p.value < 0.05),
+          stringsAsFactors = FALSE
+        ))
+      }
+    }, error = function(e) {
+      cat("Error extracting effects for", case_name, outcome, ":", e$message, "\n")
+    })
+  }
+  
+  return(results)
+}
+
+# Extract effects for all cases with error handling
+case1_effects <- extract_demographic_effects(
+  list(case1_model1, case1_model2, case1_model3, case1_model4),
+  "Total Fertility Rate Model", "fertility_rate_2023"
+)
+
+case2_effects <- extract_demographic_effects(
+  list(case2_model1, case2_model2, case2_model3, case2_model4),
+  "Ageing Population Model", "pop_65_above_2023"
+)
+
+case3_effects <- extract_demographic_effects(
+  list(case3_model1, case3_model2, case3_model3, case3_model4),
+  "Demographic Transition Model", "aging_fertility_ratio"
+)
+
+# Combine all results
+all_demographic_effects <- rbind(case1_effects, case2_effects, case3_effects)
+
+# Only proceed if we have valid results
+if(nrow(all_demographic_effects) > 0) {
+  
+  # Ensure all columns are properly formatted
+  all_demographic_effects <- all_demographic_effects %>%
+    mutate(
+      Estimate = round(as.numeric(Estimate), 4),
+      SE = round(as.numeric(SE), 4),
+      p_value = round(as.numeric(p_value), 4),
+      Significant = as.logical(Significant)
+    )
+  
+  # Add significance stars
+  all_demographic_effects <- all_demographic_effects %>%
+    mutate(
+      Significance = add_sig_stars(p_value),
+      p_value_formatted = paste0(sprintf("%.4f", p_value), Significance)
+    ) %>%
+    select(Model, Outcome, Demographic_Variable, Estimate, SE, p_value_formatted, Significant)
+  
+  names(all_demographic_effects)[6] <- "p_value"
+  
+  cat("### Summary of Demographic Effects Across All Models (2024)\n")
+  print(kable(all_demographic_effects, 
+              caption = "Demographic Effects Summary: 2024 Data"))
+  
+  # Save summary table
+  save_table_png(all_demographic_effects, "2024_demographic_effects_summary")
+  
+  # Count significant effects by case
+  sig_summary <- all_demographic_effects %>%
+    group_by(Model) %>%
+    summarise(
+      Total_Models = n(),
+      Significant_Effects = sum(Significant, na.rm = TRUE),
+      Proportion_Significant = round(Significant_Effects / Total_Models, 2),
+      .groups = 'drop'
+    )
+  
+  cat("\n### Significant Effects by Model:\n")
+  print(kable(sig_summary, caption = "Significant Effects Summary"))
+  
+  # Save significant effects summary
+  save_table_png(sig_summary, "2024_significant_effects_summary")
+  
+} else {
+  cat("No valid demographic effects data was extracted.\n")
+}
+```
+
+## Summary
+
+This simplified analysis examined the relationships between demographic factors and AI attitudes using 2024 Eurobarometer data with reduced model complexity:
+
+### Key Methodological Changes:
+1. **Simplified Variables**: Removed age-squared term, combined gender categories (including non-binary), and averaged digital skills
+2. **Three Demographic Models**: Separated total fertility rate, ageing population, and demographic transition effects
+3. **Reduced Country-level Variables**: From 4 to 3 variables per model to avoid overfitting
+4. **Country Consolidation**: Germany (DE-W + DE-E) data combined, resulting in 27 countries (United Kingdom not included in 2024 data)
+
+### Key Findings:
+- **Total Fertility Rate Model**: Effects of societal total fertility rates on AI attitudes
+- **Ageing Population Model**: Effects of population ageing on AI attitudes  
+- **Demographic Transition Model**: Effects of demographic transition (ageing/fertility ratio) on AI attitudes
+
+### Updates for 2024 Data:
+- **Non-binary Gender Option**: Accommodated expanded gender categories in 2024 survey
+- **Updated Variable References**: Used 2024-specific variable codes (qb6_* for outcomes, qb2_* for digital skills)
+- **Contemporary Country Data**: Utilised 2023 country-level indicators for population ageing, fertility, GDP, and human development
+
+The simplified approach allows for clearer interpretation of specific demographic influences whilst preserving the categorical nature of attitude responses and maintaining statistical power through reduced model complexity. Comparison with 2017 results reveals temporal changes in how demographic factors influence AI attitudes.

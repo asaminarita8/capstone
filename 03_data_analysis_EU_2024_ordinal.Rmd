@@ -1,0 +1,1165 @@
+---
+title: "Population Ageing and AI Attitudes: Simplified Ordinal Multilevel Analysis of 2024 Data"
+author: "Analysis"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: flatly
+    highlight: tango
+---
+
+```{r setup, include=FALSE}
+# Global options for the entire document
+options(scipen=999)
+options(repos = c(CRAN = "https://cloud.r-project.org/"))
+
+knitr::opts_chunk$set(
+  echo = FALSE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 10,
+  fig.height = 6,
+  dpi = 300
+)
+
+# Create Figures&Tables directory if it doesn't exist
+if (!dir.exists("Figures&Tables")) {
+  dir.create("Figures&Tables", recursive = TRUE)
+}
+```
+
+```{r load_packages}
+# Load required packages with error handling
+packages <- c("haven", "dplyr", "stringr", "ggplot2", "ordinal", "sjPlot", 
+              "effects", "tidyr", "purrr", "gridExtra", "knitr", 
+              "ggeffects", "corrplot", "broom.mixed", "viridis", "MASS", "performance")
+
+for(pkg in packages) {
+  if(!require(pkg, character.only = TRUE, quietly = TRUE)) {
+    install.packages(pkg, quiet = TRUE)
+    library(pkg, character.only = TRUE, quietly = TRUE)
+  }
+}
+
+# Function to add significance stars
+add_sig_stars <- function(p_values) {
+  stars <- character(length(p_values))
+  stars[p_values < 0.001] <- "***"
+  stars[p_values >= 0.001 & p_values < 0.01] <- "**"
+  stars[p_values >= 0.01 & p_values < 0.05] <- "*"
+  stars[p_values >= 0.05] <- ""
+  return(stars)
+}
+
+# Function to save tables with proper formatting
+save_table <- function(table_data, filename, caption = "") {
+  # Save as CSV
+  write.csv(table_data, file.path("Figures&Tables", paste0(filename, ".csv")), row.names = FALSE)
+  
+  # Create a formatted version for display
+  if("p.value" %in% names(table_data)) {
+    table_data$Significance <- add_sig_stars(table_data$p.value)
+    table_data$`p-value` <- paste0(sprintf("%.4f", table_data$p.value), table_data$Significance)
+    table_data$Significance <- NULL
+    table_data$p.value <- NULL
+  }
+  
+  return(table_data)
+}
+
+# Function to save plots
+save_plot <- function(plot_obj, filename, width = 10, height = 6) {
+  ggsave(file.path("Figures&Tables", paste0(filename, ".png")), 
+         plot_obj, width = width, height = height, dpi = 300)
+  ggsave(file.path("Figures&Tables", paste0(filename, ".pdf")), 
+         plot_obj, width = width, height = height)
+}
+```
+
+```{r load_data}
+# Load the integrated dataset
+data <- read.csv("integrated_data_Eurobarometer2024.csv", stringsAsFactors = FALSE)
+
+cat("Dataset loaded successfully\n")
+cat("Number of observations:", nrow(data), "\n")
+cat("Number of variables:", ncol(data), "\n")
+cat("Countries included:", length(unique(data$isocntry)), "\n")
+```
+
+```{r data_preprocessing}
+# Data preprocessing with simplified variables
+data <- data %>%
+  # Consolidate UK and Germany regions
+  mutate(
+    isocntry = case_when(
+      isocntry %in% c("GB-GBN", "GB-NIR") ~ "GB",
+      isocntry %in% c("DE-W", "DE-E") ~ "DE", 
+      TRUE ~ isocntry
+    )
+  ) %>%
+  mutate(
+    # Education variable processing (as before)
+    education_years = case_when(
+      d8 == 0 ~ NA_real_,         # Refused
+      d8 >= 2 & d8 <= 87 ~ d8,    # Normal education finishing age
+      d8 == 97 ~ 0,               # No education
+      d8 == 98 ~ NA_real_,        # Still studying
+      d8 == 99 ~ NA_real_,        # Don't know
+      TRUE ~ NA_real_
+    ),
+    
+    # Standardise GDP per capita to make coefficients interpretable
+    gdp_per_capita_2023_standardised = as.numeric(scale(gdp_per_capita_2023)),
+    
+    # Simplified gender variable: Male (reference) vs Non-male
+    gender_binary = factor(case_when(
+      d10 == 1 ~ 0,               # Male (reference)
+      d10 %in% c(2, 3) ~ 1,       # Female & Non-binary -> Non-male
+      TRUE ~ NA_real_
+    ), levels = 0:1, labels = c("Male", "Non-male")),
+    
+    # Community size factor variable (matching 2017 ordering)
+    community_size = factor(case_when(
+      p6 == 3 ~ 1,                # Rural area
+      p6 == 2 ~ 2,                # Towns and suburbs
+      p6 == 1 ~ 3,                # Cities
+      TRUE ~ NA_real_
+    ), levels = 1:3, labels = c("Rural area", "Towns and suburbs", "Cities")),
+    
+    # Political orientation (left-right scale)
+    political_lr = case_when(
+      d1r2 == 1 ~ 1,              # Left (1-2)
+      d1r2 == 2 ~ 2,              # (3-4)
+      d1r2 == 3 ~ 3,              # Centre (5-6)  
+      d1r2 == 4 ~ 4,              # (7-8)
+      d1r2 == 5 ~ 5,              # Right (9-10)
+      d1r2 == 9 ~ NA_real_,       # DK/Refusal
+      TRUE ~ NA_real_
+    ),
+    
+    # Individual digital skills variables (reverse coded so higher = more skilled)
+    digital_skills_daily = case_when(
+      qb2_1 == 1 ~ 4,             # Totally agree (high skills)
+      qb2_1 == 2 ~ 3,             # Tend to agree
+      qb2_1 == 3 ~ 2,             # Tend to disagree
+      qb2_1 == 4 ~ 1,             # Totally disagree (low skills)
+      qb2_1 == 5 ~ NA_real_,      # Not applicable
+      qb2_1 == 6 ~ NA_real_,      # Don't know
+      TRUE ~ NA_real_
+    ),
+    
+    digital_skills_job = case_when(
+      qb2_2 == 1 ~ 4,             # Totally agree (high skills)
+      qb2_2 == 2 ~ 3,             # Tend to agree
+      qb2_2 == 3 ~ 2,             # Tend to disagree
+      qb2_2 == 4 ~ 1,             # Totally disagree (low skills)
+      qb2_2 == 5 ~ NA_real_,      # Not applicable
+      qb2_2 == 6 ~ NA_real_,      # Don't know
+      TRUE ~ NA_real_
+    ),
+    
+    digital_skills_future = case_when(
+      qb2_3 == 1 ~ 4,             # Totally agree (high skills)
+      qb2_3 == 2 ~ 3,             # Tend to agree
+      qb2_3 == 3 ~ 2,             # Tend to disagree
+      qb2_3 == 4 ~ 1,             # Totally disagree (low skills)
+      qb2_3 == 5 ~ NA_real_,      # Not applicable
+      qb2_3 == 6 ~ NA_real_,      # Don't know
+      TRUE ~ NA_real_
+    ),
+    
+    digital_skills_learning = case_when(
+      qb2_4 == 1 ~ 4,             # Totally agree (high skills)
+      qb2_4 == 2 ~ 3,             # Tend to agree
+      qb2_4 == 3 ~ 2,             # Tend to disagree
+      qb2_4 == 4 ~ 1,             # Totally disagree (low skills)
+      qb2_4 == 5 ~ NA_real_,      # Not applicable
+      qb2_4 == 6 ~ NA_real_,      # Don't know
+      TRUE ~ NA_real_
+    ),
+    
+    # Dependent variables as ordered factors (no reverse coding)
+    robot_good_society = case_when(
+      qb6_2 == 1 ~ "Totally agree",
+      qb6_2 == 2 ~ "Tend to agree",
+      qb6_2 == 3 ~ "Tend to disagree", 
+      qb6_2 == 4 ~ "Totally disagree",
+      qb6_2 == 5 ~ NA_character_,      # Don't know
+      TRUE ~ NA_character_
+    ),
+    
+    robot_steal_jobs = case_when(
+      qb6_5 == 1 ~ "Totally agree",    # Robots take jobs
+      qb6_5 == 2 ~ "Tend to agree",
+      qb6_5 == 3 ~ "Tend to disagree", # Robots don't take jobs
+      qb6_5 == 4 ~ "Totally disagree",
+      qb6_5 == 5 ~ NA_character_,      # Don't know
+      TRUE ~ NA_character_
+    ),
+    
+    robot_job_losses = case_when(
+      qb6_1 == 1 ~ "Totally agree",    # Job losses exceed creation
+      qb6_1 == 2 ~ "Tend to agree", 
+      qb6_1 == 3 ~ "Tend to disagree", # Job creation exceeds losses
+      qb6_1 == 4 ~ "Totally disagree",
+      qb6_1 == 5 ~ NA_character_,      # Don't know
+      TRUE ~ NA_character_
+    ),
+    
+    robot_careful_mgmt = case_when(
+      qb6_3 == 1 ~ "Totally agree",
+      qb6_3 == 2 ~ "Tend to agree",
+      qb6_3 == 3 ~ "Tend to disagree",
+      qb6_3 == 4 ~ "Totally disagree", 
+      qb6_3 == 5 ~ NA_character_,      # Don't know
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  # Convert to ordered factors
+  mutate(
+    robot_good_society = factor(robot_good_society,
+                               levels = c("Totally agree", "Tend to agree", "Tend to disagree", "Totally disagree"), 
+                               ordered = TRUE),
+    robot_steal_jobs = factor(robot_steal_jobs,
+                             levels = c("Totally agree", "Tend to agree", "Tend to disagree", "Totally disagree"),
+                             ordered = TRUE),
+    robot_job_losses = factor(robot_job_losses, 
+                             levels = c("Totally agree", "Tend to agree", "Tend to disagree", "Totally disagree"),
+                             ordered = TRUE),
+    robot_careful_mgmt = factor(robot_careful_mgmt,
+                               levels = c("Totally agree", "Tend to agree", "Tend to disagree", "Totally disagree"),
+                               ordered = TRUE)
+  ) %>%
+  
+  # Create averaged digital skills variable
+  rowwise() %>%
+  mutate(
+    digital_skills_avg = mean(c(digital_skills_daily, digital_skills_job, 
+                               digital_skills_future, digital_skills_learning), na.rm = TRUE)
+  ) %>%
+  ungroup() %>%
+  
+  # Replace NaN with NA for cases where all digital skills are missing
+  mutate(
+    digital_skills_avg = ifelse(is.nan(digital_skills_avg), NA_real_, digital_skills_avg)
+  ) %>%
+  
+  # Create demographic ratio variable (ageing/fertility)
+  mutate(
+    ageing_fertility_ratio = pop_65_above_2023 / fertility_rate_2023
+  )
+
+# Summary of key variables
+cat("Summary of simplified variables:\n")
+cat("Age: Mean =", round(mean(data$d11, na.rm = TRUE), 2), 
+    ", SD =", round(sd(data$d11, na.rm = TRUE), 2), "\n")
+cat("Digital skills average: Mean =", round(mean(data$digital_skills_avg, na.rm = TRUE), 2), 
+    ", SD =", round(sd(data$digital_skills_avg, na.rm = TRUE), 2), "\n")
+cat("Gender distribution:\n")
+print(table(data$gender_binary, useNA = "always"))
+cat("Countries included:", length(unique(data$isocntry)), "\n")
+```
+
+```{r data_quality_check}
+# Check missing data patterns for simplified variables
+key_vars <- c("d11", "gender_binary", "education_years", "community_size", "political_lr", 
+              "digital_skills_avg", "robot_good_society", "robot_steal_jobs", 
+              "robot_job_losses", "robot_careful_mgmt")
+
+# Calculate missing percentages manually
+missing_pct <- data.frame(
+  variable = character(),
+  missing_percentage = numeric(),
+  stringsAsFactors = FALSE
+)
+
+for(var in key_vars) {
+  missing_pct <- rbind(missing_pct, data.frame(
+    variable = var,
+    missing_percentage = round(mean(is.na(data[[var]])) * 100, 2),
+    stringsAsFactors = FALSE
+  ))
+}
+
+# Sort by missing percentage
+missing_pct <- missing_pct[order(missing_pct$missing_percentage, decreasing = TRUE), ]
+
+cat("Missing data percentages for key variables:\n")
+print(kable(missing_pct, 
+            col.names = c("Variable", "Missing %"),
+            caption = "Missing Data Summary"))
+
+# Save missing data summary
+save_table(missing_pct, "2024_simplified_ordinal_missing_data", "Missing Data Summary")
+```
+
+# Total Fertility Rate Model
+
+**Model Equation:**
+$$logit[P(Y_{ij} \leq j)] = \alpha_j + \beta_1 Age_{ij} + \beta_2 Gender_{ij} + \beta_3 Education_{ij} + \beta_4 CommunitySize_{ij} +$$
+$$\beta_5 PoliticalLR_{ij} + \beta_6 DigitalSkills_{ij} + \gamma_1 TotalFertilityRate_j + \gamma_2 GDP_j + \gamma_3 IHDI_j + u_{0j}$$
+
+**Variable Descriptions:**
+
+- **Y**: Ordinal response (1=Totally agree, 2=Tend to agree, 3=Tend to disagree, 4=Totally disagree)
+- **α_j**: Threshold parameters for ordinal categories
+- **Age**: Individual's age in years
+- **Gender**: Individual's gender (reference: Male)
+- **Education**: Years of education
+- **CommunitySize**: Size of community (reference: Rural area)
+- **PoliticalLR**: Political orientation on left-right scale (1=left, 5=right)
+- **DigitalSkills**: Average digital skills score (1=low, 4=high)
+- **TotalFertilityRate**: Country-level total fertility rate (births per woman)
+- **GDP**: Country-level GDP per capita (standardised)
+- **IHDI**: Country-level Inequality-adjusted Human Development Index
+- **u₀j**: Country-level random intercept
+
+```{r model1_prep}
+# Total Fertility Rate Model: Country-level variables = fertility_rate, GDP, IHDI
+# Prepare data for Total Fertility Rate models
+
+prepare_model1_data <- function(data, outcome_var) {
+  data %>%
+    filter(!is.na(!!sym(outcome_var))) %>%
+    filter(!is.na(d11), !is.na(gender_binary), !is.na(education_years),
+           !is.na(community_size), !is.na(political_lr), !is.na(digital_skills_avg),
+           !is.na(fertility_rate_2023), !is.na(gdp_per_capita_2023_standardised), !is.na(ihdi_2023)) %>%
+    # Remove countries with too few observations to avoid convergence issues
+    group_by(isocntry) %>%
+    filter(n() >= 20) %>%  # Minimum 20 observations per country
+    ungroup() %>%
+    # Check for complete separation by ensuring each country has variation in outcomes
+    group_by(isocntry) %>%
+    filter(length(unique(!!sym(outcome_var))) > 1) %>%  # Each country must have variation
+    ungroup()
+}
+
+# Prepare datasets for each outcome
+model1_good_society <- prepare_model1_data(data, "robot_good_society")
+model1_steal_jobs <- prepare_model1_data(data, "robot_steal_jobs")
+model1_job_losses <- prepare_model1_data(data, "robot_job_losses")
+model1_careful_mgmt <- prepare_model1_data(data, "robot_careful_mgmt")
+
+cat("Total Fertility Rate Model sample sizes:\n")
+cat("Good for Society:", nrow(model1_good_society), "\n")
+cat("Steal Jobs:", nrow(model1_steal_jobs), "\n")
+cat("Job Losses:", nrow(model1_job_losses), "\n")
+cat("Careful Management:", nrow(model1_careful_mgmt), "\n")
+```
+
+```{r model1_models}
+# Helper function to format ordinal model tables with fit statistics
+format_ordinal_table <- function(model, caption, table_filename) {
+  if(is.null(model)) {
+    cat("Cannot format results for", caption, "- model fitting failed.\n")
+    return(NULL)
+  }
+  
+  tryCatch({
+    # Extract coefficients
+    coef_summary <- summary(model)$coefficients
+    
+    # Calculate confidence intervals
+    confint_results <- tryCatch({
+      confint(model)
+    }, error = function(e) {
+      # If confint fails, calculate manually using standard errors
+      estimates <- coef_summary[, "Estimate"]
+      std_errors <- coef_summary[, "Std. Error"]
+      lower <- estimates - 1.96 * std_errors
+      upper <- estimates + 1.96 * std_errors
+      cbind(lower, upper)
+    })
+    
+    # Create formatted table
+    results_table <- data.frame(
+      Predictor = rownames(coef_summary),
+      Estimate = round(coef_summary[, "Estimate"], 3),
+      Std_Error = round(coef_summary[, "Std. Error"], 3),
+      CI = paste0("[", round(confint_results[, 1], 3), ", ", round(confint_results[, 2], 3), "]"),
+      p_value = round(coef_summary[, "Pr(>|z|)"], 4),
+      stringsAsFactors = FALSE
+    )
+    
+    # Add significance stars
+    results_table$Significance <- add_sig_stars(results_table$p_value)
+    results_table$p_value_formatted <- paste0(sprintf("%.4f", results_table$p_value), results_table$Significance)
+    
+    # Clean up predictor names
+    results_table$Predictor <- case_when(
+      results_table$Predictor == "d11" ~ "Age",
+      results_table$Predictor == "gender_binaryNon-male" ~ "Gender: Non-male",
+      results_table$Predictor == "education_years" ~ "Education Years",
+      results_table$Predictor == "community_sizeTowns and suburbs" ~ "Community: Towns/Suburbs",
+      results_table$Predictor == "community_sizeCities" ~ "Community: Cities",
+      results_table$Predictor == "political_lr" ~ "Political Orientation",
+      results_table$Predictor == "digital_skills_avg" ~ "Digital Skills (Average)",
+      results_table$Predictor == "fertility_rate_2023" ~ "Total Fertility Rate",
+      results_table$Predictor == "gdp_per_capita_2023_standardised" ~ "GDP per Capita (Standardised)",
+      results_table$Predictor == "ihdi_2023" ~ "IHDI",
+      TRUE ~ results_table$Predictor
+    )
+    
+    # Final table with proper column names
+    display_table <- data.frame(
+      Predictor = results_table$Predictor,
+      Estimate = results_table$Estimate,
+      `Std Error` = results_table$Std_Error,
+      `95% CI` = results_table$CI,
+      `p-value` = results_table$p_value_formatted,
+      check.names = FALSE
+    )
+    
+    # Save table
+    write.csv(display_table, file.path("Figures&Tables", paste0(table_filename, ".csv")), row.names = FALSE)
+    
+    # Get model fit statistics
+    fit_stats <- tryCatch({
+      # Calculate McFadden's pseudo R-squared
+      null_model <- clmm(as.formula(paste0(all.vars(model$formula)[1], " ~ 1 + (1 | isocntry)")), 
+                         data = model$model)
+      mcfadden_r2 <- 1 - (logLik(model) / logLik(null_model))
+      
+      # Extract random effects variance
+      random_var <- tryCatch({
+        var_corr <- VarCorr(model)
+        if(is.list(var_corr) && "isocntry" %in% names(var_corr)) {
+          as.numeric(var_corr$isocntry[1])
+        } else {
+          as.numeric(attr(var_corr, "sc"))^2
+        }
+      }, error = function(e) {
+        NA_real_
+      })
+      
+      # Residual variance for ordinal models (logistic)
+      var_residual <- pi^2/3
+      
+      # Calculate ICC if random variance is available
+      icc <- if(!is.na(random_var)) {
+        random_var / (random_var + var_residual)
+      } else {
+        NA_real_
+      }
+      
+      cat("\n**Random Effects**\n")
+      cat("σ²:", round(var_residual, 3), "\n")
+      if(!is.na(random_var)) {
+        cat("τ₀₀ isocntry:", round(random_var, 3), "\n")
+      }
+      if(!is.na(icc)) {
+        cat("ICC:", round(icc, 3), "\n")
+      }
+      cat("N isocntry:", length(unique(model$model$isocntry)), "\n")
+      cat("Observations:", nrow(model$model), "\n")
+      cat("McFadden's Pseudo R²:", round(mcfadden_r2, 3), "\n")
+      cat("AIC:", round(AIC(model), 3), "\n\n")
+      
+    }, error = function(e) {
+      cat("\nModel fit statistics could not be calculated.\n\n")
+    })
+    
+    return(kable(display_table, caption = caption))
+    
+  }, error = function(e) {
+    cat("Error formatting results for", caption, ":", e$message, "\n")
+    return(NULL)
+  })
+}
+
+# Helper function to safely fit ordinal models
+safe_ordinal_fit <- function(formula_str, data, model_name) {
+  cat("Fitting", model_name, "...\n")
+  
+  tryCatch({
+    # Convert formula string to formula
+    formula_obj <- as.formula(formula_str)
+    
+    # Fit the model
+    model <- clmm(formula_obj, data = data, link = "logit")
+    
+    cat("Model", model_name, "fitted successfully.\n")
+    return(model)
+    
+  }, error = function(e) {
+    cat("ERROR fitting", model_name, ":\n")
+    cat("Error message:", e$message, "\n")
+    return(NULL)
+  })
+}
+
+# Total Fertility Rate Models
+
+# Model 1.1: Robot/AI Good for Society
+model1_model1 <- safe_ordinal_fit(
+  "robot_good_society ~ d11 + gender_binary + education_years + community_size + political_lr + digital_skills_avg + fertility_rate_2023 + gdp_per_capita_2023_standardised + ihdi_2023 + (1 | isocntry)",
+  model1_good_society,
+  "Good for Society (Total Fertility Rate Model)"
+)
+
+print("## Total Fertility Rate Model: Robot/AI Good for Society")
+if(!is.null(model1_model1)) {
+  format_ordinal_table(model1_model1, "Total Fertility Rate Model: Robot/AI Good for Society", 
+                      "2024_model1_ordinal_model1_good_society")
+}
+
+# Model 1.2: Robot/AI Steal Jobs
+model1_model2 <- safe_ordinal_fit(
+  "robot_steal_jobs ~ d11 + gender_binary + education_years + community_size + political_lr + digital_skills_avg + fertility_rate_2023 + gdp_per_capita_2023_standardised + ihdi_2023 + (1 | isocntry)",
+  model1_steal_jobs,
+  "Steal Jobs (Total Fertility Rate Model)"
+)
+
+print("## Total Fertility Rate Model: Robot/AI Steal Jobs")
+if(!is.null(model1_model2)) {
+  format_ordinal_table(model1_model2, "Total Fertility Rate Model: Robot/AI Steal Jobs", 
+                      "2024_model1_ordinal_model2_steal_jobs")
+}
+
+# Model 1.3: Robot/AI Job Losses
+model1_model3 <- safe_ordinal_fit(
+  "robot_job_losses ~ d11 + gender_binary + education_years + community_size + political_lr + digital_skills_avg + fertility_rate_2023 + gdp_per_capita_2023_standardised + ihdi_2023 + (1 | isocntry)",
+  model1_job_losses,
+  "Job Losses (Total Fertility Rate Model)"
+)
+
+print("## Total Fertility Rate Model: Robot/AI Job Losses")
+if(!is.null(model1_model3)) {
+  format_ordinal_table(model1_model3, "Total Fertility Rate Model: Robot/AI Job Losses", 
+                      "2024_model1_ordinal_model3_job_losses")
+}
+
+# Model 1.4: Robot/AI Careful Management
+model1_model4 <- safe_ordinal_fit(
+  "robot_careful_mgmt ~ d11 + gender_binary + education_years + community_size + political_lr + digital_skills_avg + fertility_rate_2023 + gdp_per_capita_2023_standardised + ihdi_2023 + (1 | isocntry)",
+  model1_careful_mgmt,
+  "Careful Management (Total Fertility Rate Model)"
+)
+
+print("## Total Fertility Rate Model: Robot/AI Careful Management")
+if(!is.null(model1_model4)) {
+  format_ordinal_table(model1_model4, "Total Fertility Rate Model: Robot/AI Careful Management", 
+                      "2024_model1_ordinal_model4_careful_mgmt")
+}
+```
+
+# Ageing Population Model
+
+**Model Equation:**
+$$logit[P(Y_{ij} \leq j)] = \alpha_j + \beta_1 Age_{ij} + \beta_2 Gender_{ij} + \beta_3 Education_{ij} + \beta_4 CommunitySize_{ij} +$$
+$$\beta_5 PoliticalLR_{ij} + \beta_6 DigitalSkills_{ij} + \gamma_1 PopAgeing_j + \gamma_2 GDP_j + \gamma_3 IHDI_j + u_{0j}$$
+
+**Variable Descriptions:**
+
+- **Y**: Ordinal response (1=Totally agree, 2=Tend to agree, 3=Tend to disagree, 4=Totally disagree)
+- **α_j**: Threshold parameters for ordinal categories
+- **Age**: Individual's age in years
+- **Gender**: Individual's gender (reference: Male)
+- **Education**: Years of education
+- **CommunitySize**: Size of community (reference: Rural area)
+- **PoliticalLR**: Political orientation on left-right scale (1=left, 5=right)
+- **DigitalSkills**: Average digital skills score (1=low, 4=high)
+- **PopAgeing**: Country-level percentage of population aged 65+
+- **GDP**: Country-level GDP per capita (standardised)
+- **IHDI**: Country-level Inequality-adjusted Human Development Index
+- **u₀j**: Country-level random intercept
+
+```{r model2_prep}
+# Ageing Population Model: Country-level variables = pop_65_above, GDP, IHDI
+# Prepare data for Ageing Population models
+
+prepare_model2_data <- function(data, outcome_var) {
+  data %>%
+    filter(!is.na(!!sym(outcome_var))) %>%
+    filter(!is.na(d11), !is.na(gender_binary), !is.na(education_years),
+           !is.na(community_size), !is.na(political_lr), !is.na(digital_skills_avg),
+           !is.na(pop_65_above_2023), !is.na(gdp_per_capita_2023_standardised), !is.na(ihdi_2023)) %>%
+    # Remove countries with too few observations to avoid convergence issues
+    group_by(isocntry) %>%
+    filter(n() >= 20) %>%  # Minimum 20 observations per country
+    ungroup() %>%
+    # Check for complete separation by ensuring each country has variation in outcomes
+    group_by(isocntry) %>%
+    filter(length(unique(!!sym(outcome_var))) > 1) %>%  # Each country must have variation
+    ungroup()
+}
+
+# Prepare datasets for each outcome
+model2_good_society <- prepare_model2_data(data, "robot_good_society")
+model2_steal_jobs <- prepare_model2_data(data, "robot_steal_jobs")
+model2_job_losses <- prepare_model2_data(data, "robot_job_losses")
+model2_careful_mgmt <- prepare_model2_data(data, "robot_careful_mgmt")
+
+cat("Ageing Population Model sample sizes:\n")
+cat("Good for Society:", nrow(model2_good_society), "\n")
+cat("Steal Jobs:", nrow(model2_steal_jobs), "\n")
+cat("Job Losses:", nrow(model2_job_losses), "\n")
+cat("Careful Management:", nrow(model2_careful_mgmt), "\n")
+```
+
+```{r model2_models}
+# Ageing Population Models
+
+# Model 2.1: Robot/AI Good for Society
+model2_model1 <- safe_ordinal_fit(
+  "robot_good_society ~ d11 + gender_binary + education_years + community_size + political_lr + digital_skills_avg + pop_65_above_2023 + gdp_per_capita_2023_standardised + ihdi_2023 + (1 | isocntry)",
+  model2_good_society,
+  "Good for Society (Ageing Population Model)"
+)
+
+print("## Ageing Population Model: Robot/AI Good for Society")
+# Update the format function for model 2
+format_ordinal_table_model2 <- function(model, caption, table_filename) {
+  if(is.null(model)) {
+    cat("Cannot format results for", caption, "- model fitting failed.\n")
+    return(NULL)
+  }
+  
+  tryCatch({
+    # Extract coefficients
+    coef_summary <- summary(model)$coefficients
+    
+    # Calculate confidence intervals
+    confint_results <- tryCatch({
+      confint(model)
+    }, error = function(e) {
+      # If confint fails, calculate manually using standard errors
+      estimates <- coef_summary[, "Estimate"]
+      std_errors <- coef_summary[, "Std. Error"]
+      lower <- estimates - 1.96 * std_errors
+      upper <- estimates + 1.96 * std_errors
+      cbind(lower, upper)
+    })
+    
+    # Create formatted table
+    results_table <- data.frame(
+      Predictor = rownames(coef_summary),
+      Estimate = round(coef_summary[, "Estimate"], 3),
+      Std_Error = round(coef_summary[, "Std. Error"], 3),
+      CI = paste0("[", round(confint_results[, 1], 3), ", ", round(confint_results[, 2], 3), "]"),
+      p_value = round(coef_summary[, "Pr(>|z|)"], 4),
+      stringsAsFactors = FALSE
+    )
+    
+    # Add significance stars
+    results_table$Significance <- add_sig_stars(results_table$p_value)
+    results_table$p_value_formatted <- paste0(sprintf("%.4f", results_table$p_value), results_table$Significance)
+    
+    # Clean up predictor names
+    results_table$Predictor <- case_when(
+      results_table$Predictor == "d11" ~ "Age",
+      results_table$Predictor == "gender_binaryNon-male" ~ "Gender: Non-male",
+      results_table$Predictor == "education_years" ~ "Education Years",
+      results_table$Predictor == "community_sizeTowns and suburbs" ~ "Community: Towns/Suburbs",
+      results_table$Predictor == "community_sizeCities" ~ "Community: Cities",
+      results_table$Predictor == "political_lr" ~ "Political Orientation",
+      results_table$Predictor == "digital_skills_avg" ~ "Digital Skills (Average)",
+      results_table$Predictor == "pop_65_above_2023" ~ "Population Aged 65+",
+      results_table$Predictor == "gdp_per_capita_2023_standardised" ~ "GDP per Capita (Standardised)",
+      results_table$Predictor == "ihdi_2023" ~ "IHDI",
+      TRUE ~ results_table$Predictor
+    )
+    
+    # Final table with proper column names
+    display_table <- data.frame(
+      Predictor = results_table$Predictor,
+      Estimate = results_table$Estimate,
+      `Std Error` = results_table$Std_Error,
+      `95% CI` = results_table$CI,
+      `p-value` = results_table$p_value_formatted,
+      check.names = FALSE
+    )
+    
+    # Save table
+    write.csv(display_table, file.path("Figures&Tables", paste0(table_filename, ".csv")), row.names = FALSE)
+    
+    # Get model fit statistics
+    fit_stats <- tryCatch({
+      # Calculate McFadden's pseudo R-squared
+      null_model <- clmm(as.formula(paste0(all.vars(model$formula)[1], " ~ 1 + (1 | isocntry)")), 
+                         data = model$model)
+      mcfadden_r2 <- 1 - (logLik(model) / logLik(null_model))
+      
+      # Extract random effects variance
+      random_var <- tryCatch({
+        var_corr <- VarCorr(model)
+        if(is.list(var_corr) && "isocntry" %in% names(var_corr)) {
+          as.numeric(var_corr$isocntry[1])
+        } else {
+          as.numeric(attr(var_corr, "sc"))^2
+        }
+      }, error = function(e) {
+        NA_real_
+      })
+      
+      # Residual variance for ordinal models (logistic)
+      var_residual <- pi^2/3
+      
+      # Calculate ICC if random variance is available
+      icc <- if(!is.na(random_var)) {
+        random_var / (random_var + var_residual)
+      } else {
+        NA_real_
+      }
+      
+      cat("\n**Random Effects**\n")
+      cat("σ²:", round(var_residual, 3), "\n")
+      if(!is.na(random_var)) {
+        cat("τ₀₀ isocntry:", round(random_var, 3), "\n")
+      }
+      if(!is.na(icc)) {
+        cat("ICC:", round(icc, 3), "\n")
+      }
+      cat("N isocntry:", length(unique(model$model$isocntry)), "\n")
+      cat("Observations:", nrow(model$model), "\n")
+      cat("McFadden's Pseudo R²:", round(mcfadden_r2, 3), "\n")
+      cat("AIC:", round(AIC(model), 3), "\n\n")
+      
+    }, error = function(e) {
+      cat("\nModel fit statistics could not be calculated.\n\n")
+    })
+    
+    return(kable(display_table, caption = caption))
+    
+  }, error = function(e) {
+    cat("Error formatting results for", caption, ":", e$message, "\n")
+    return(NULL)
+  })
+}
+
+if(!is.null(model2_model1)) {
+  format_ordinal_table_model2(model2_model1, "Ageing Population Model: Robot/AI Good for Society", 
+                      "2024_model2_ordinal_model1_good_society")
+}
+
+# Model 2.2: Robot/AI Steal Jobs
+model2_model2 <- safe_ordinal_fit(
+  "robot_steal_jobs ~ d11 + gender_binary + education_years + community_size + political_lr + digital_skills_avg + pop_65_above_2023 + gdp_per_capita_2023_standardised + ihdi_2023 + (1 | isocntry)",
+  model2_steal_jobs,
+  "Steal Jobs (Ageing Population Model)"
+)
+
+print("## Ageing Population Model: Robot/AI Steal Jobs")
+if(!is.null(model2_model2)) {
+  format_ordinal_table_model2(model2_model2, "Ageing Population Model: Robot/AI Steal Jobs", 
+                      "2024_model2_ordinal_model2_steal_jobs")
+}
+
+# Model 2.3: Robot/AI Job Losses
+model2_model3 <- safe_ordinal_fit(
+  "robot_job_losses ~ d11 + gender_binary + education_years + community_size + political_lr + digital_skills_avg + pop_65_above_2023 + gdp_per_capita_2023_standardised + ihdi_2023 + (1 | isocntry)",
+  model2_job_losses,
+  "Job Losses (Ageing Population Model)"
+)
+
+print("## Ageing Population Model: Robot/AI Job Losses")
+if(!is.null(model2_model3)) {
+  format_ordinal_table_model2(model2_model3, "Ageing Population Model: Robot/AI Job Losses", 
+                      "2024_model2_ordinal_model3_job_losses")
+}
+
+# Model 2.4: Robot/AI Careful Management
+model2_model4 <- safe_ordinal_fit(
+  "robot_careful_mgmt ~ d11 + gender_binary + education_years + community_size + political_lr + digital_skills_avg + pop_65_above_2023 + gdp_per_capita_2023_standardised + ihdi_2023 + (1 | isocntry)",
+  model2_careful_mgmt,
+  "Careful Management (Ageing Population Model)"
+)
+
+print("## Ageing Population Model: Robot/AI Careful Management")
+if(!is.null(model2_model4)) {
+  format_ordinal_table_model2(model2_model4, "Ageing Population Model: Robot/AI Careful Management", 
+                      "2024_model2_ordinal_model4_careful_mgmt")
+}
+```
+
+# Demographic Transition Model
+
+**Model Equation:**
+$$logit[P(Y_{ij} \leq j)] = \alpha_j + \beta_1 Age_{ij} + \beta_2 Gender_{ij} + \beta_3 Education_{ij} + \beta_4 CommunitySize_{ij} +$$
+$$\beta_5 PoliticalLR_{ij} + \beta_6 DigitalSkills_{ij} + \gamma_1 AgeingFertilityRatio_j + \gamma_2 GDP_j + \gamma_3 IHDI_j + u_{0j}$$
+
+**Variable Descriptions:**
+
+- **Y**: Ordinal response (1=Totally agree, 2=Tend to agree, 3=Tend to disagree, 4=Totally disagree)
+- **α_j**: Threshold parameters for ordinal categories
+- **Age**: Individual's age in years
+- **Gender**: Individual's gender (reference: Male)
+- **Education**: Years of education
+- **CommunitySize**: Size of community (reference: Rural area)
+- **PoliticalLR**: Political orientation on left-right scale (1=left, 5=right)
+- **DigitalSkills**: Average digital skills score (1=low, 4=high)
+- **AgeingFertilityRatio**: Country-level demographic transition ratio (% aged 65+ / fertility rate)
+- **GDP**: Country-level GDP per capita (standardised)
+- **IHDI**: Country-level Inequality-adjusted Human Development Index
+- **u₀j**: Country-level random intercept
+
+```{r model3_prep}
+# Demographic Transition Model: Country-level variables = ageing_fertility_ratio, GDP, IHDI
+# Prepare data for Demographic Transition models
+
+prepare_model3_data <- function(data, outcome_var) {
+  data %>%
+    filter(!is.na(!!sym(outcome_var))) %>%
+    filter(!is.na(d11), !is.na(gender_binary), !is.na(education_years),
+           !is.na(community_size), !is.na(political_lr), !is.na(digital_skills_avg),
+           !is.na(ageing_fertility_ratio), !is.na(gdp_per_capita_2023_standardised), !is.na(ihdi_2023)) %>%
+    # Remove countries with too few observations to avoid convergence issues
+    group_by(isocntry) %>%
+    filter(n() >= 20) %>%  # Minimum 20 observations per country
+    ungroup() %>%
+    # Check for complete separation by ensuring each country has variation in outcomes
+    group_by(isocntry) %>%
+    filter(length(unique(!!sym(outcome_var))) > 1) %>%  # Each country must have variation
+    ungroup()
+}
+
+# Prepare datasets for each outcome
+model3_good_society <- prepare_model3_data(data, "robot_good_society")
+model3_steal_jobs <- prepare_model3_data(data, "robot_steal_jobs")
+model3_job_losses <- prepare_model3_data(data, "robot_job_losses")
+model3_careful_mgmt <- prepare_model3_data(data, "robot_careful_mgmt")
+
+cat("Demographic Transition Model sample sizes:\n")
+cat("Good for Society:", nrow(model3_good_society), "\n")
+cat("Steal Jobs:", nrow(model3_steal_jobs), "\n")
+cat("Job Losses:", nrow(model3_job_losses), "\n")
+cat("Careful Management:", nrow(model3_careful_mgmt), "\n")
+
+# Display demographic transition ratio statistics
+cat("\nDemographic Transition Ratio (Ageing/Fertility) Statistics:\n")
+cat("Mean:", round(mean(data$ageing_fertility_ratio, na.rm = TRUE), 2), "\n")
+cat("SD:", round(sd(data$ageing_fertility_ratio, na.rm = TRUE), 2), "\n")
+cat("Range:", round(min(data$ageing_fertility_ratio, na.rm = TRUE), 2), "-", 
+    round(max(data$ageing_fertility_ratio, na.rm = TRUE), 2), "\n")
+```
+
+```{r model3_models}
+# Demographic Transition Models
+
+# Model 3.1: Robot/AI Good for Society
+model3_model1 <- safe_ordinal_fit(
+  "robot_good_society ~ d11 + gender_binary + education_years + community_size + political_lr + digital_skills_avg + ageing_fertility_ratio + gdp_per_capita_2023_standardised + ihdi_2023 + (1 | isocntry)",
+  model3_good_society,
+  "Good for Society (Demographic Transition Model)"
+)
+
+print("## Demographic Transition Model: Robot/AI Good for Society")
+# Update the format function for model 3
+format_ordinal_table_model3 <- function(model, caption, table_filename) {
+  if(is.null(model)) {
+    cat("Cannot format results for", caption, "- model fitting failed.\n")
+    return(NULL)
+  }
+  
+  tryCatch({
+    # Extract coefficients
+    coef_summary <- summary(model)$coefficients
+    
+    # Calculate confidence intervals
+    confint_results <- tryCatch({
+      confint(model)
+    }, error = function(e) {
+      # If confint fails, calculate manually using standard errors
+      estimates <- coef_summary[, "Estimate"]
+      std_errors <- coef_summary[, "Std. Error"]
+      lower <- estimates - 1.96 * std_errors
+      upper <- estimates + 1.96 * std_errors
+      cbind(lower, upper)
+    })
+    
+    # Create formatted table
+    results_table <- data.frame(
+      Predictor = rownames(coef_summary),
+      Estimate = round(coef_summary[, "Estimate"], 3),
+      Std_Error = round(coef_summary[, "Std. Error"], 3),
+      CI = paste0("[", round(confint_results[, 1], 3), ", ", round(confint_results[, 2], 3), "]"),
+      p_value = round(coef_summary[, "Pr(>|z|)"], 4),
+      stringsAsFactors = FALSE
+    )
+    
+    # Add significance stars
+    results_table$Significance <- add_sig_stars(results_table$p_value)
+    results_table$p_value_formatted <- paste0(sprintf("%.4f", results_table$p_value), results_table$Significance)
+    
+    # Clean up predictor names
+    results_table$Predictor <- case_when(
+      results_table$Predictor == "d11" ~ "Age",
+      results_table$Predictor == "gender_binaryNon-male" ~ "Gender: Non-male",
+      results_table$Predictor == "education_years" ~ "Education Years",
+      results_table$Predictor == "community_sizeTowns and suburbs" ~ "Community: Towns/Suburbs",
+      results_table$Predictor == "community_sizeCities" ~ "Community: Cities",
+      results_table$Predictor == "political_lr" ~ "Political Orientation",
+      results_table$Predictor == "digital_skills_avg" ~ "Digital Skills (Average)",
+      results_table$Predictor == "ageing_fertility_ratio" ~ "Ageing-Fertility Ratio",
+      results_table$Predictor == "gdp_per_capita_2023_standardised" ~ "GDP per Capita (Standardised)",
+      results_table$Predictor == "ihdi_2023" ~ "IHDI",
+      TRUE ~ results_table$Predictor
+    )
+    
+    # Final table with proper column names
+    display_table <- data.frame(
+      Predictor = results_table$Predictor,
+      Estimate = results_table$Estimate,
+      `Std Error` = results_table$Std_Error,
+      `95% CI` = results_table$CI,
+      `p-value` = results_table$p_value_formatted,
+      check.names = FALSE
+    )
+    
+    # Save table
+    write.csv(display_table, file.path("Figures&Tables", paste0(table_filename, ".csv")), row.names = FALSE)
+    
+    # Get model fit statistics
+    fit_stats <- tryCatch({
+      # Calculate McFadden's pseudo R-squared
+      null_model <- clmm(as.formula(paste0(all.vars(model$formula)[1], " ~ 1 + (1 | isocntry)")), 
+                         data = model$model)
+      mcfadden_r2 <- 1 - (logLik(model) / logLik(null_model))
+      
+      # Extract random effects variance
+      random_var <- tryCatch({
+        var_corr <- VarCorr(model)
+        if(is.list(var_corr) && "isocntry" %in% names(var_corr)) {
+          as.numeric(var_corr$isocntry[1])
+        } else {
+          as.numeric(attr(var_corr, "sc"))^2
+        }
+      }, error = function(e) {
+        NA_real_
+      })
+      
+      # Residual variance for ordinal models (logistic)
+      var_residual <- pi^2/3
+      
+      # Calculate ICC if random variance is available
+      icc <- if(!is.na(random_var)) {
+        random_var / (random_var + var_residual)
+      } else {
+        NA_real_
+      }
+      
+      cat("\n**Random Effects**\n")
+      cat("σ²:", round(var_residual, 3), "\n")
+      if(!is.na(random_var)) {
+        cat("τ₀₀ isocntry:", round(random_var, 3), "\n")
+      }
+      if(!is.na(icc)) {
+        cat("ICC:", round(icc, 3), "\n")
+      }
+      cat("N isocntry:", length(unique(model$model$isocntry)), "\n")
+      cat("Observations:", nrow(model$model), "\n")
+      cat("McFadden's Pseudo R²:", round(mcfadden_r2, 3), "\n")
+      cat("AIC:", round(AIC(model), 3), "\n\n")
+      
+    }, error = function(e) {
+      cat("\nModel fit statistics could not be calculated.\n\n")
+    })
+    
+    return(kable(display_table, caption = caption))
+    
+  }, error = function(e) {
+    cat("Error formatting results for", caption, ":", e$message, "\n")
+    return(NULL)
+  })
+}
+
+if(!is.null(model3_model1)) {
+  format_ordinal_table_model3(model3_model1, "Demographic Transition Model: Robot/AI Good for Society", 
+                      "2024_model3_ordinal_model1_good_society")
+}
+
+# Model 3.2: Robot/AI Steal Jobs
+model3_model2 <- safe_ordinal_fit(
+  "robot_steal_jobs ~ d11 + gender_binary + education_years + community_size + political_lr + digital_skills_avg + ageing_fertility_ratio + gdp_per_capita_2023_standardised + ihdi_2023 + (1 | isocntry)",
+  model3_steal_jobs,
+  "Steal Jobs (Demographic Transition Model)"
+)
+
+print("## Demographic Transition Model: Robot/AI Steal Jobs")
+if(!is.null(model3_model2)) {
+  format_ordinal_table_model3(model3_model2, "Demographic Transition Model: Robot/AI Steal Jobs", 
+                      "2024_model3_ordinal_model2_steal_jobs")
+}
+
+# Model 3.3: Robot/AI Job Losses
+model3_model3 <- safe_ordinal_fit(
+  "robot_job_losses ~ d11 + gender_binary + education_years + community_size + political_lr + digital_skills_avg + ageing_fertility_ratio + gdp_per_capita_2023_standardised + ihdi_2023 + (1 | isocntry)",
+  model3_job_losses,
+  "Job Losses (Demographic Transition Model)"
+)
+
+print("## Demographic Transition Model: Robot/AI Job Losses")
+if(!is.null(model3_model3)) {
+  format_ordinal_table_model3(model3_model3, "Demographic Transition Model: Robot/AI Job Losses", 
+                      "2024_model3_ordinal_model3_job_losses")
+}
+
+# Model 3.4: Robot/AI Careful Management
+model3_model4 <- safe_ordinal_fit(
+  "robot_careful_mgmt ~ d11 + gender_binary + education_years + community_size + political_lr + digital_skills_avg + ageing_fertility_ratio + gdp_per_capita_2023_standardised + ihdi_2023 + (1 | isocntry)",
+  model3_careful_mgmt,
+  "Careful Management (Demographic Transition Model)"
+)
+
+print("## Demographic Transition Model: Robot/AI Careful Management")
+if(!is.null(model3_model4)) {
+  format_ordinal_table_model3(model3_model4, "Demographic Transition Model: Robot/AI Careful Management", 
+                      "2024_model3_ordinal_model4_careful_mgmt")
+}
+```
+
+# Summary Comparison Across Models
+
+```{r summary_comparison}
+# Extract key coefficients from all models for comparison
+extract_demographic_effects <- function(models, model_name, demographic_var) {
+  results <- data.frame(
+    Model = character(),
+    Outcome = character(),
+    Demographic_Variable = character(),
+    Estimate = numeric(),
+    SE = numeric(),
+    p_value = numeric(),
+    Significant = logical(),
+    stringsAsFactors = FALSE
+  )
+  
+  outcome_names <- c("Good for Society", "Steal Jobs", "Job Losses", "Careful Management")
+  
+  for(i in 1:length(models)) {
+    model <- models[[i]]
+    outcome <- outcome_names[i]
+    
+    if(!is.null(model)) {
+      tryCatch({
+        # Extract coefficients
+        coef_summary <- summary(model)$coefficients
+        
+        # Find demographic variable effect
+        demo_row <- coef_summary[rownames(coef_summary) == demographic_var, ]
+        
+        if(length(demo_row) > 0) {
+          results <- rbind(results, data.frame(
+            Model = model_name,
+            Outcome = outcome,
+            Demographic_Variable = demographic_var,
+            Estimate = as.numeric(demo_row["Estimate"]),
+            SE = as.numeric(demo_row["Std. Error"]),
+            p_value = as.numeric(demo_row["Pr(>|z|)"]),
+            Significant = as.logical(demo_row["Pr(>|z|)"] < 0.05),
+            stringsAsFactors = FALSE
+          ))
+        }
+      }, error = function(e) {
+        cat("Error extracting effects for", model_name, outcome, ":", e$message, "\n")
+      })
+    }
+  }
+  
+  return(results)
+}
+
+# Extract effects for all models with error handling
+model1_effects <- extract_demographic_effects(
+  list(model1_model1, model1_model2, model1_model3, model1_model4),
+  "Total Fertility Rate Model", "fertility_rate_2023"
+)
+
+model2_effects <- extract_demographic_effects(
+  list(model2_model1, model2_model2, model2_model3, model2_model4),
+  "Ageing Population Model", "pop_65_above_2023"
+)
+
+model3_effects <- extract_demographic_effects(
+  list(model3_model1, model3_model2, model3_model3, model3_model4),
+  "Demographic Transition Model", "ageing_fertility_ratio"
+)
+
+# Combine all results
+all_demographic_effects <- rbind(model1_effects, model2_effects, model3_effects)
+
+# Only proceed if we have valid results
+if(nrow(all_demographic_effects) > 0) {
+  
+  # Ensure all columns are properly formatted
+  all_demographic_effects$Estimate <- round(as.numeric(all_demographic_effects$Estimate), 4)
+  all_demographic_effects$SE <- round(as.numeric(all_demographic_effects$SE), 4)
+  all_demographic_effects$p_value <- round(as.numeric(all_demographic_effects$p_value), 4)
+  all_demographic_effects$Significant <- as.logical(all_demographic_effects$Significant)
+  
+  # Add significance stars
+  all_demographic_effects$Significance <- add_sig_stars(all_demographic_effects$p_value)
+  all_demographic_effects$p_value_formatted <- paste0(sprintf("%.4f", all_demographic_effects$p_value), all_demographic_effects$Significance)
+  
+  # Create final results manually
+  final_results <- data.frame(
+    Model = all_demographic_effects$Model,
+    Outcome = all_demographic_effects$Outcome,
+    Demographic_Variable = all_demographic_effects$Demographic_Variable,
+    Estimate = all_demographic_effects$Estimate,
+    SE = all_demographic_effects$SE,
+    `p-value` = all_demographic_effects$p_value_formatted,
+    Significant = all_demographic_effects$Significant,
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  )
+  
+  cat("### Summary of Demographic Effects Across All Models (2024 - Ordinal)\n")
+  print(kable(final_results, 
+              caption = "Demographic Effects Summary: 2024 Ordinal Data"))
+  
+  # Save summary table
+  save_table(final_results, "2024_ordinal_demographic_effects_summary", 
+            "Summary of Demographic Effects")
+  
+  # Count significant effects by model
+  sig_summary <- data.frame(
+    Model = character(),
+    Total_Models = numeric(),
+    Significant_Effects = numeric(),
+    Proportion_Significant = numeric(),
+    stringsAsFactors = FALSE
+  )
+  
+  for(model_name in unique(final_results$Model)) {
+    model_data <- final_results[final_results$Model == model_name, ]
+    sig_summary <- rbind(sig_summary, data.frame(
+      Model = model_name,
+      Total_Models = nrow(model_data),
+      Significant_Effects = sum(model_data$Significant, na.rm = TRUE),
+      Proportion_Significant = round(sum(model_data$Significant, na.rm = TRUE) / nrow(model_data), 2),
+      stringsAsFactors = FALSE
+    ))
+  }
+  
+  cat("\n### Significant Effects by Model:\n")
+  print(kable(sig_summary, caption = "Significant Effects Summary"))
+  
+} else {
+  cat("No valid demographic effects data were extracted.\n")
+}
+```
+
+## Summary
+
+This simplified ordinal regression analysis examined the relationships between demographic factors and AI attitudes using 2024 Eurobarometer data across 27 European countries with reduced model complexity:
+
+### Key Methodological Changes:
+1. **Simplified Variables**: Removed age-squared term, combined gender categories (including non-binary), and averaged digital skills
+2. **Three Demographic Models**: Separated total fertility rate, ageing population, and demographic transition effects
+3. **Reduced Country-level Variables**: From 4 to 3 variables per model to avoid overfitting
+4. **Ordinal Regression Framework**: Maintains ordered categorical structure of responses
+
+### Key Findings:
+- **Total Fertility Rate Model**: Effects of societal total fertility rates on AI attitudes using ordinal regression
+- **Ageing Population Model**: Effects of population ageing on AI attitudes using ordinal regression  
+- **Demographic Transition Model**: Effects of demographic transition (ageing/fertility ratio) on AI attitudes using ordinal regression
+
+### Updates for 2024 Data:
+- **Non-binary Gender Option**: Accommodated expanded gender categories in 2024 survey
+- **Updated Variable References**: Used 2024-specific variable codes (qb6_* for outcomes, qb2_* for digital skills)
+- **Contemporary Country Data**: Utilised 2023 country-level indicators for population ageing, fertility, GDP, and human development
+
+The simplified ordinal approach allows for clearer interpretation of specific demographic influences whilst preserving the categorical nature of attitude responses and maintaining statistical power through reduced model complexity. Comparison with 2017 results reveals temporal changes in how demographic factors influence AI attitudes.

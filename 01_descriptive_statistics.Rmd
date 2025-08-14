@@ -1,0 +1,1891 @@
+---
+title: "Descriptive Statistics: Population Ageing and AI Attitudes (2017 vs 2024) - Fixed"
+author: "Analysis"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: flatly
+    highlight: tango
+---
+
+```{r setup, include=FALSE}
+options(scipen=999)
+options(repos = c(CRAN = "https://cloud.r-project.org/"))
+
+knitr::opts_chunk$set(
+  echo = FALSE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 14,
+  fig.height = 10,
+  dpi = 300
+)
+
+if (!dir.exists("Figures&Tables")) {
+  dir.create("Figures&Tables", recursive = TRUE)
+}
+```
+
+```{r load_packages}
+packages <- c("dplyr", "ggplot2", "knitr", "gridExtra", "viridis", 
+              "tidyr", "stringr", "scales", "RColorBrewer", "ggpubr")
+
+for(pkg in packages) {
+  if(!require(pkg, character.only = TRUE, quietly = TRUE)) {
+    install.packages(pkg, quiet = TRUE)
+    library(pkg, character.only = TRUE, quietly = TRUE)
+  }
+}
+
+save_plot <- function(plot_obj, filename, width = 14, height = 10) {
+  ggsave(file.path("Figures&Tables", paste0(filename, ".png")), 
+         plot_obj, width = width, height = height, dpi = 300)
+}
+
+save_table <- function(table_data, filename) {
+  write.csv(table_data, file.path("Figures&Tables", paste0(filename, ".csv")), row.names = FALSE)
+}
+```
+
+```{r create_country_mapping}
+# Updated country mapping to consolidate UK and Germany
+country_mapping <- data.frame(
+  isocntry = c("AT", "BE", "BG", "CY", "CZ", "DE", "DK", "EE", "ES", "FI", 
+               "FR", "GB", "GR", "HR", "HU", "IE", "IT", "LT", "LU", "LV", 
+               "MT", "NL", "PL", "PT", "RO", "SE", "SI", "SK"),
+  country_name = c("Austria", "Belgium", "Bulgaria", "Cyprus", "Czechia", 
+                   "Germany", "Denmark", "Estonia", "Spain", "Finland", 
+                   "France", "United Kingdom", "Greece", "Croatia", "Hungary", 
+                   "Ireland", "Italy", "Lithuania", "Luxembourg", "Latvia", 
+                   "Malta", "Netherlands", "Poland", "Portugal", "Romania", 
+                   "Sweden", "Slovenia", "Slovak Republic"),
+  stringsAsFactors = FALSE
+)
+```
+
+```{r load_and_preprocess_data}
+# Load datasets
+data_2017 <- read.csv("integrated_data_Eurobarometer2017.csv", stringsAsFactors = FALSE)
+data_2024 <- read.csv("integrated_data_Eurobarometer2024.csv", stringsAsFactors = FALSE)
+
+# Function to consolidate countries
+consolidate_countries <- function(data) {
+  data %>%
+    mutate(
+      isocntry = case_when(
+        isocntry %in% c("GB-GBN", "GB-NIR") ~ "GB",
+        isocntry %in% c("DE-W", "DE-E") ~ "DE",
+        TRUE ~ isocntry
+      )
+    )
+}
+
+# Apply country consolidation
+data_2017 <- consolidate_countries(data_2017)
+data_2024 <- consolidate_countries(data_2024)
+
+# Preprocessing functions (same as before but with updated labels)
+preprocess_2017 <- function(data) {
+  data %>%
+    mutate(
+      education_years = case_when(
+        d8 == 0 ~ NA_real_,
+        d8 >= 2 & d8 <= 87 ~ d8,
+        d8 == 97 ~ 0,
+        d8 == 98 ~ NA_real_,
+        d8 == 99 ~ NA_real_,
+        TRUE ~ NA_real_
+      ),
+      
+      gdp_per_capita_2016_standardised = as.numeric(scale(gdp_per_capita_2016)),
+      
+      gender_binary = factor(case_when(
+        d10 == 1 ~ 0,
+        d10 == 2 ~ 1,
+        TRUE ~ NA_real_
+      ), levels = 0:1, labels = c("Male", "Non-male")),
+      
+      community_size = factor(case_when(
+        p6 == "1" ~ 1,
+        p6 == "2" ~ 2,
+        p6 == "3" ~ 3,
+        TRUE ~ NA_real_
+      ), levels = 1:3, labels = c("Rural area", "Towns and suburbs", "Cities")),
+      
+      political_lr = case_when(
+        d1r2 == 1 ~ 1,
+        d1r2 == 2 ~ 2,
+        d1r2 == 3 ~ 3,
+        d1r2 == 4 ~ 4,
+        d1r2 == 5 ~ 5,
+        d1r2 == 9 ~ NA_real_,
+        TRUE ~ NA_real_
+      ),
+      
+      digital_skills_daily = case_when(
+        qd4_1 == 1 ~ 4,
+        qd4_1 == 2 ~ 3,
+        qd4_1 == 3 ~ 2,
+        qd4_1 == 4 ~ 1,
+        qd4_1 == 5 ~ NA_real_,
+        TRUE ~ NA_real_
+      ),
+      
+      digital_skills_job = case_when(
+        qd4_2 == 1 ~ 4,
+        qd4_2 == 2 ~ 3,
+        qd4_2 == 3 ~ 2,
+        qd4_2 == 4 ~ 1,
+        qd4_2 == 5 ~ NA_real_,
+        qd4_2 == 9 ~ NA_real_,
+        TRUE ~ NA_real_
+      ),
+      
+      digital_skills_future = case_when(
+        qd4_3 == 1 ~ 4,
+        qd4_3 == 2 ~ 3,
+        qd4_3 == 3 ~ 2,
+        qd4_3 == 4 ~ 1,
+        qd4_3 == 5 ~ NA_real_,
+        qd4_3 == 9 ~ NA_real_,
+        TRUE ~ NA_real_
+      ),
+      
+      digital_skills_learning = case_when(
+        qd4_5 == 1 ~ 4,
+        qd4_5 == 2 ~ 3,
+        qd4_5 == 3 ~ 2,
+        qd4_5 == 4 ~ 1,
+        qd4_5 == 5 ~ NA_real_,
+        TRUE ~ NA_real_
+      ),
+      
+      robot_job_losses = case_when(
+        qd12_1 == 1 ~ "Totally agree",
+        qd12_1 == 2 ~ "Tend to agree", 
+        qd12_1 == 3 ~ "Tend to disagree",
+        qd12_1 == 4 ~ "Totally disagree",
+        qd12_1 == 5 ~ NA_character_,
+        TRUE ~ NA_character_
+      ),
+      
+      robot_good_society = case_when(
+        qd12_2 == 1 ~ "Totally agree",
+        qd12_2 == 2 ~ "Tend to agree",
+        qd12_2 == 3 ~ "Tend to disagree", 
+        qd12_2 == 4 ~ "Totally disagree",
+        qd12_2 == 5 ~ NA_character_,
+        TRUE ~ NA_character_
+      ),
+      
+      robot_careful_mgmt = case_when(
+        qd12_3 == 1 ~ "Totally agree",
+        qd12_3 == 2 ~ "Tend to agree",
+        qd12_3 == 3 ~ "Tend to disagree",
+        qd12_3 == 4 ~ "Totally disagree", 
+        qd12_3 == 5 ~ NA_character_,
+        TRUE ~ NA_character_
+      ),
+      
+      robot_steal_jobs = case_when(
+        qd12_6 == 1 ~ "Totally agree",
+        qd12_6 == 2 ~ "Tend to agree",
+        qd12_6 == 3 ~ "Tend to disagree",
+        qd12_6 == 4 ~ "Totally disagree",
+        qd12_6 == 5 ~ NA_character_,
+        TRUE ~ NA_character_
+      )
+    ) %>%
+    mutate(
+      robot_job_losses = factor(robot_job_losses, 
+                               levels = c("Totally agree", "Tend to agree", "Tend to disagree", "Totally disagree"),
+                               ordered = TRUE),
+      robot_good_society = factor(robot_good_society,
+                                 levels = c("Totally agree", "Tend to agree", "Tend to disagree", "Totally disagree"), 
+                                 ordered = TRUE),
+      robot_careful_mgmt = factor(robot_careful_mgmt,
+                                 levels = c("Totally agree", "Tend to agree", "Tend to disagree", "Totally disagree"),
+                                 ordered = TRUE),
+      robot_steal_jobs = factor(robot_steal_jobs,
+                               levels = c("Totally agree", "Tend to agree", "Tend to disagree", "Totally disagree"),
+                               ordered = TRUE)
+    ) %>%
+    rowwise() %>%
+    mutate(
+      digital_skills_avg = mean(c(digital_skills_daily, digital_skills_job, 
+                                 digital_skills_future, digital_skills_learning), na.rm = TRUE)
+    ) %>%
+    ungroup() %>%
+    mutate(
+      digital_skills_avg = ifelse(is.nan(digital_skills_avg), NA_real_, digital_skills_avg)
+    ) %>%
+    mutate(
+      aging_fertility_ratio = pop_65_above_2016 / fertility_rate_2016
+    )
+}
+
+preprocess_2024 <- function(data) {
+  data %>%
+    mutate(
+      education_years = case_when(
+        d8 == 0 ~ NA_real_,
+        d8 >= 2 & d8 <= 87 ~ d8,
+        d8 == 97 ~ 0,
+        d8 == 98 ~ NA_real_,
+        d8 == 99 ~ NA_real_,
+        TRUE ~ NA_real_
+      ),
+      
+      gdp_per_capita_2023_standardised = as.numeric(scale(gdp_per_capita_2023)),
+      
+      gender_binary = factor(case_when(
+        d10 == 1 ~ 0,
+        d10 %in% c(2, 3) ~ 1,
+        TRUE ~ NA_real_
+      ), levels = 0:1, labels = c("Male", "Non-male")),
+      
+      community_size = factor(case_when(
+        p6 == 3 ~ 1,
+        p6 == 2 ~ 2,
+        p6 == 1 ~ 3,
+        TRUE ~ NA_real_
+      ), levels = 1:3, labels = c("Rural area", "Towns and suburbs", "Cities")),
+      
+      political_lr = case_when(
+        d1r2 == 1 ~ 1,
+        d1r2 == 2 ~ 2,
+        d1r2 == 3 ~ 3,
+        d1r2 == 4 ~ 4,
+        d1r2 == 5 ~ 5,
+        d1r2 == 9 ~ NA_real_,
+        TRUE ~ NA_real_
+      ),
+      
+      digital_skills_daily = case_when(
+        qb2_1 == 1 ~ 4,
+        qb2_1 == 2 ~ 3,
+        qb2_1 == 3 ~ 2,
+        qb2_1 == 4 ~ 1,
+        qb2_1 == 5 ~ NA_real_,
+        qb2_1 == 6 ~ NA_real_,
+        TRUE ~ NA_real_
+      ),
+      
+      digital_skills_job = case_when(
+        qb2_2 == 1 ~ 4,
+        qb2_2 == 2 ~ 3,
+        qb2_2 == 3 ~ 2,
+        qb2_2 == 4 ~ 1,
+        qb2_2 == 5 ~ NA_real_,
+        qb2_2 == 6 ~ NA_real_,
+        TRUE ~ NA_real_
+      ),
+      
+      digital_skills_future = case_when(
+        qb2_3 == 1 ~ 4,
+        qb2_3 == 2 ~ 3,
+        qb2_3 == 3 ~ 2,
+        qb2_3 == 4 ~ 1,
+        qb2_3 == 5 ~ NA_real_,
+        qb2_3 == 6 ~ NA_real_,
+        TRUE ~ NA_real_
+      ),
+      
+      digital_skills_learning = case_when(
+        qb2_4 == 1 ~ 4,
+        qb2_4 == 2 ~ 3,
+        qb2_4 == 3 ~ 2,
+        qb2_4 == 4 ~ 1,
+        qb2_4 == 5 ~ NA_real_,
+        qb2_4 == 6 ~ NA_real_,
+        TRUE ~ NA_real_
+      ),
+      
+      robot_job_losses = case_when(
+        qb6_1 == 1 ~ "Totally agree",
+        qb6_1 == 2 ~ "Tend to agree", 
+        qb6_1 == 3 ~ "Tend to disagree",
+        qb6_1 == 4 ~ "Totally disagree",
+        qb6_1 == 5 ~ NA_character_,
+        TRUE ~ NA_character_
+      ),
+      
+      robot_good_society = case_when(
+        qb6_2 == 1 ~ "Totally agree",
+        qb6_2 == 2 ~ "Tend to agree",
+        qb6_2 == 3 ~ "Tend to disagree", 
+        qb6_2 == 4 ~ "Totally disagree",
+        qb6_2 == 5 ~ NA_character_,
+        TRUE ~ NA_character_
+      ),
+      
+      robot_careful_mgmt = case_when(
+        qb6_3 == 1 ~ "Totally agree",
+        qb6_3 == 2 ~ "Tend to agree",
+        qb6_3 == 3 ~ "Tend to disagree",
+        qb6_3 == 4 ~ "Totally disagree", 
+        qb6_3 == 5 ~ NA_character_,
+        TRUE ~ NA_character_
+      ),
+      
+      robot_steal_jobs = case_when(
+        qb6_5 == 1 ~ "Totally agree",
+        qb6_5 == 2 ~ "Tend to agree",
+        qb6_5 == 3 ~ "Tend to disagree",
+        qb6_5 == 4 ~ "Totally disagree",
+        qb6_5 == 5 ~ NA_character_,
+        TRUE ~ NA_character_
+      )
+    ) %>%
+    mutate(
+      robot_job_losses = factor(robot_job_losses, 
+                               levels = c("Totally agree", "Tend to agree", "Tend to disagree", "Totally disagree"),
+                               ordered = TRUE),
+      robot_good_society = factor(robot_good_society,
+                                 levels = c("Totally agree", "Tend to agree", "Tend to disagree", "Totally disagree"), 
+                                 ordered = TRUE),
+      robot_careful_mgmt = factor(robot_careful_mgmt,
+                                 levels = c("Totally agree", "Tend to agree", "Tend to disagree", "Totally disagree"),
+                                 ordered = TRUE),
+      robot_steal_jobs = factor(robot_steal_jobs,
+                               levels = c("Totally agree", "Tend to agree", "Tend to disagree", "Totally disagree"),
+                               ordered = TRUE)
+    ) %>%
+    rowwise() %>%
+    mutate(
+      digital_skills_avg = mean(c(digital_skills_daily, digital_skills_job, 
+                                 digital_skills_future, digital_skills_learning), na.rm = TRUE)
+    ) %>%
+    ungroup() %>%
+    mutate(
+      digital_skills_avg = ifelse(is.nan(digital_skills_avg), NA_real_, digital_skills_avg)
+    ) %>%
+    mutate(
+      aging_fertility_ratio = pop_65_above_2023 / fertility_rate_2023
+    )
+}
+
+# Apply preprocessing
+data_2017_processed <- preprocess_2017(data_2017)
+data_2024_processed <- preprocess_2024(data_2024)
+
+cat("Data preprocessing completed\n")
+cat("2017 preprocessed observations:", nrow(data_2017_processed), "\n")
+cat("2024 preprocessed observations:", nrow(data_2024_processed), "\n")
+```
+
+```{r create_analytical_samples}
+# Create analytical samples exactly as in the original analysis
+
+# For 2017 data
+prepare_case1_2017 <- function(data, outcome_var) {
+  data %>%
+    filter(!is.na(!!sym(outcome_var))) %>%
+    filter(!is.na(d11), !is.na(gender_binary), !is.na(education_years),
+           !is.na(community_size), !is.na(political_lr), !is.na(digital_skills_avg),
+           !is.na(fertility_rate_2016), !is.na(gdp_per_capita_2016_standardised), !is.na(ihdi_2016)) %>%
+    group_by(isocntry) %>%
+    filter(n() >= 20) %>%
+    ungroup() %>%
+    group_by(isocntry) %>%
+    filter(length(unique(!!sym(outcome_var))) > 1) %>%
+    ungroup()
+}
+
+prepare_case2_2017 <- function(data, outcome_var) {
+  data %>%
+    filter(!is.na(!!sym(outcome_var))) %>%
+    filter(!is.na(d11), !is.na(gender_binary), !is.na(education_years),
+           !is.na(community_size), !is.na(political_lr), !is.na(digital_skills_avg),
+           !is.na(pop_65_above_2016), !is.na(gdp_per_capita_2016_standardised), !is.na(ihdi_2016)) %>%
+    group_by(isocntry) %>%
+    filter(n() >= 20) %>%
+    ungroup() %>%
+    group_by(isocntry) %>%
+    filter(length(unique(!!sym(outcome_var))) > 1) %>%
+    ungroup()
+}
+
+prepare_case3_2017 <- function(data, outcome_var) {
+  data %>%
+    filter(!is.na(!!sym(outcome_var))) %>%
+    filter(!is.na(d11), !is.na(gender_binary), !is.na(education_years),
+           !is.na(community_size), !is.na(political_lr), !is.na(digital_skills_avg),
+           !is.na(aging_fertility_ratio), !is.na(gdp_per_capita_2016_standardised), !is.na(ihdi_2016)) %>%
+    group_by(isocntry) %>%
+    filter(n() >= 20) %>%
+    ungroup() %>%
+    group_by(isocntry) %>%
+    filter(length(unique(!!sym(outcome_var))) > 1) %>%
+    ungroup()
+}
+
+# For 2024 data
+prepare_case1_2024 <- function(data, outcome_var) {
+  data %>%
+    filter(!is.na(!!sym(outcome_var))) %>%
+    filter(!is.na(d11), !is.na(gender_binary), !is.na(education_years),
+           !is.na(community_size), !is.na(political_lr), !is.na(digital_skills_avg),
+           !is.na(fertility_rate_2023), !is.na(gdp_per_capita_2023_standardised), !is.na(ihdi_2023)) %>%
+    group_by(isocntry) %>%
+    filter(n() >= 20) %>%
+    ungroup() %>%
+    group_by(isocntry) %>%
+    filter(length(unique(!!sym(outcome_var))) > 1) %>%
+    ungroup()
+}
+
+prepare_case2_2024 <- function(data, outcome_var) {
+  data %>%
+    filter(!is.na(!!sym(outcome_var))) %>%
+    filter(!is.na(d11), !is.na(gender_binary), !is.na(education_years),
+           !is.na(community_size), !is.na(political_lr), !is.na(digital_skills_avg),
+           !is.na(pop_65_above_2023), !is.na(gdp_per_capita_2023_standardised), !is.na(ihdi_2023)) %>%
+    group_by(isocntry) %>%
+    filter(n() >= 20) %>%
+    ungroup() %>%
+    group_by(isocntry) %>%
+    filter(length(unique(!!sym(outcome_var))) > 1) %>%
+    ungroup()
+}
+
+prepare_case3_2024 <- function(data, outcome_var) {
+  data %>%
+    filter(!is.na(!!sym(outcome_var))) %>%
+    filter(!is.na(d11), !is.na(gender_binary), !is.na(education_years),
+           !is.na(community_size), !is.na(political_lr), !is.na(digital_skills_avg),
+           !is.na(aging_fertility_ratio), !is.na(gdp_per_capita_2023_standardised), !is.na(ihdi_2023)) %>%
+    group_by(isocntry) %>%
+    filter(n() >= 20) %>%
+    ungroup() %>%
+    group_by(isocntry) %>%
+    filter(length(unique(!!sym(outcome_var))) > 1) %>%
+    ungroup()
+}
+
+# Create analytical samples for all cases and outcomes
+outcomes <- c("robot_job_losses", "robot_good_society", "robot_careful_mgmt", "robot_steal_jobs")
+
+# For 2017 - create all analytical samples
+all_samples_2017 <- list()
+for (outcome in outcomes) {
+  all_samples_2017[[paste0("case1_", outcome)]] <- prepare_case1_2017(data_2017_processed, outcome)
+  all_samples_2017[[paste0("case2_", outcome)]] <- prepare_case2_2017(data_2017_processed, outcome)
+  all_samples_2017[[paste0("case3_", outcome)]] <- prepare_case3_2017(data_2017_processed, outcome)
+}
+
+# For 2024 - create all analytical samples
+all_samples_2024 <- list()
+for (outcome in outcomes) {
+  all_samples_2024[[paste0("case1_", outcome)]] <- prepare_case1_2024(data_2024_processed, outcome)
+  all_samples_2024[[paste0("case2_", outcome)]] <- prepare_case2_2024(data_2024_processed, outcome)
+  all_samples_2024[[paste0("case3_", outcome)]] <- prepare_case3_2024(data_2024_processed, outcome)
+}
+
+# Combine all unique individuals from all analytical samples
+combine_analytical_samples <- function(samples_list) {
+  all_ids <- c()
+  for (sample in samples_list) {
+    all_ids <- c(all_ids, paste(sample$isocntry, sample$uniqid, sep = "_"))
+  }
+  unique_ids <- unique(all_ids)
+  return(unique_ids)
+}
+
+analytical_ids_2017 <- combine_analytical_samples(all_samples_2017)
+analytical_ids_2024 <- combine_analytical_samples(all_samples_2024)
+
+# Create final analytical datasets
+analytical_2017 <- data_2017_processed %>%
+  mutate(sample_id = paste(isocntry, uniqid, sep = "_")) %>%
+  filter(sample_id %in% analytical_ids_2017) %>%
+  left_join(country_mapping, by = "isocntry")
+
+analytical_2024 <- data_2024_processed %>%
+  mutate(sample_id = paste(isocntry, uniqid, sep = "_")) %>%
+  filter(sample_id %in% analytical_ids_2024) %>%
+  left_join(country_mapping, by = "isocntry")
+
+cat("Analytical sample sizes:\n")
+cat("2017:", nrow(analytical_2017), "individuals\n")
+cat("2024:", nrow(analytical_2024), "individuals\n")
+cat("2017 countries:", length(unique(analytical_2017$isocntry)), "\n")
+cat("2024 countries:", length(unique(analytical_2024$isocntry)), "\n")
+```
+
+```{r generate_descriptive_statistics_2017_with_missing}
+# Generate comprehensive descriptive statistics for 2017 - WITH MISSING VALUES FOR AI ATTITUDES
+
+# Function to calculate AI attitudes including missing values
+calculate_ai_attitudes_with_missing <- function(data, processed_var, original_var) {
+  # Get the processed variable (non-missing responses)
+  processed_responses <- table(data[[processed_var]])
+  total_processed <- sum(processed_responses)
+  
+  # Count missing values from original data (5 = "Don't Know", NA = "Don't Answer")
+  missing_count <- sum(is.na(data[[original_var]]) | data[[original_var]] == 5, na.rm = FALSE)
+  
+  # Total sample size (analytical sample)
+  total_sample <- nrow(data)
+  
+  # Create result dataframe
+  result <- data.frame()
+  
+  # Add non-missing responses
+  for (response in names(processed_responses)) {
+    result <- rbind(result, data.frame(
+      Response = response,
+      N = as.numeric(processed_responses[response]),
+      Percentage = round(as.numeric(processed_responses[response]) / total_sample * 100, 1)
+    ))
+  }
+  
+  # Add missing values
+  if (missing_count > 0) {
+    result <- rbind(result, data.frame(
+      Response = "Don't Know/Don't Answer",
+      N = missing_count,
+      Percentage = round(missing_count / total_sample * 100, 1)
+    ))
+  }
+  
+  return(result)
+}
+
+# Individual-level continuous variables
+individual_continuous_2017 <- data.frame(
+  Variable = c("Age", "Education Years", "Political Orientation", "Digital Skills"),
+  N = c(
+    sum(!is.na(analytical_2017$d11)),
+    sum(!is.na(analytical_2017$education_years)),
+    sum(!is.na(analytical_2017$political_lr)),
+    sum(!is.na(analytical_2017$digital_skills_avg))
+  ),
+  Mean = c(
+    round(mean(analytical_2017$d11, na.rm = TRUE), 1),
+    round(mean(analytical_2017$education_years, na.rm = TRUE), 1),
+    round(mean(analytical_2017$political_lr, na.rm = TRUE), 2),
+    round(mean(analytical_2017$digital_skills_avg, na.rm = TRUE), 2)
+  ),
+  SD = c(
+    round(sd(analytical_2017$d11, na.rm = TRUE), 1),
+    round(sd(analytical_2017$education_years, na.rm = TRUE), 1),
+    round(sd(analytical_2017$political_lr, na.rm = TRUE), 2),
+    round(sd(analytical_2017$digital_skills_avg, na.rm = TRUE), 2)
+  ),
+  Min = c(
+    round(min(analytical_2017$d11, na.rm = TRUE), 0),
+    round(min(analytical_2017$education_years, na.rm = TRUE), 0),
+    round(min(analytical_2017$political_lr, na.rm = TRUE), 0),
+    round(min(analytical_2017$digital_skills_avg, na.rm = TRUE), 2)
+  ),
+  Max = c(
+    round(max(analytical_2017$d11, na.rm = TRUE), 0),
+    round(max(analytical_2017$education_years, na.rm = TRUE), 0),
+    round(max(analytical_2017$political_lr, na.rm = TRUE), 0),
+    round(max(analytical_2017$digital_skills_avg, na.rm = TRUE), 2)
+  )
+)
+
+# Individual-level categorical variables
+gender_table_2017 <- table(analytical_2017$gender_binary)
+community_table_2017 <- table(analytical_2017$community_size)
+
+individual_categorical_2017 <- data.frame(
+  Variable = c("Gender", "", "Community Size", "", ""),
+  Category = c("Male", "Non-male", "Rural area", "Towns and suburbs", "Cities"),
+  N = c(
+    as.numeric(gender_table_2017["Male"]),
+    as.numeric(gender_table_2017["Non-male"]),
+    as.numeric(community_table_2017["Rural area"]),
+    as.numeric(community_table_2017["Towns and suburbs"]),
+    as.numeric(community_table_2017["Cities"])
+  ),
+  Percentage = c(
+    round(as.numeric(gender_table_2017["Male"]) / sum(gender_table_2017) * 100, 1),
+    round(as.numeric(gender_table_2017["Non-male"]) / sum(gender_table_2017) * 100, 1),
+    round(as.numeric(community_table_2017["Rural area"]) / sum(community_table_2017) * 100, 1),
+    round(as.numeric(community_table_2017["Towns and suburbs"]) / sum(community_table_2017) * 100, 1),
+    round(as.numeric(community_table_2017["Cities"]) / sum(community_table_2017) * 100, 1)
+  )
+)
+
+# AI attitudes WITH MISSING VALUES
+ai_attitudes_2017 <- list(
+  job_losses = calculate_ai_attitudes_with_missing(analytical_2017, "robot_job_losses", "qd12_1"),
+  good_society = calculate_ai_attitudes_with_missing(analytical_2017, "robot_good_society", "qd12_2"),
+  careful_mgmt = calculate_ai_attitudes_with_missing(analytical_2017, "robot_careful_mgmt", "qd12_3"),
+  steal_jobs = calculate_ai_attitudes_with_missing(analytical_2017, "robot_steal_jobs", "qd12_6")
+)
+
+# Country-level statistics with updated labels
+country_stats_2017 <- analytical_2017 %>%
+  group_by(country_name) %>%
+  summarise(
+    N = n(),
+    `Total Fertility Rate` = round(first(fertility_rate_2016), 3),
+    `Population 65+(%)` = round(first(pop_65_above_2016), 1),
+    `GDP per Capita($)` = round(first(gdp_per_capita_2016), 0),
+    `IHDI` = round(first(ihdi_2016), 3),
+    `Aging-Fertility Ratio` = round(first(aging_fertility_ratio), 2),
+    .groups = 'drop'
+  ) %>%
+  arrange(country_name)
+
+# Sample sizes by case
+cases <- c("Case I (Fertility)", "Case II (Ageing)", "Case III (Transition)")
+case_keys <- c("case1", "case2", "case3")
+outcome_names <- c("Job Losses", "Good for Society", "Careful Management", "Steal Jobs")
+
+sample_sizes_2017 <- data.frame()
+for (i in 1:length(case_keys)) {
+  for (j in 1:length(outcomes)) {
+    sample_name <- paste0(case_keys[i], "_", outcomes[j])
+    sample_data <- all_samples_2017[[sample_name]]
+    
+    sample_sizes_2017 <- rbind(sample_sizes_2017, data.frame(
+      Case = cases[i],
+      Outcome = outcome_names[j],
+      N = nrow(sample_data),
+      Countries = length(unique(sample_data$isocntry))
+    ))
+  }
+}
+```
+
+```{r generate_descriptive_statistics_2024_with_missing}
+# Generate comprehensive descriptive statistics for 2024 - WITH MISSING VALUES FOR AI ATTITUDES
+
+# Individual-level continuous variables
+individual_continuous_2024 <- data.frame(
+  Variable = c("Age", "Education Years", "Political Orientation", "Digital Skills"),
+  N = c(
+    sum(!is.na(analytical_2024$d11)),
+    sum(!is.na(analytical_2024$education_years)),
+    sum(!is.na(analytical_2024$political_lr)),
+    sum(!is.na(analytical_2024$digital_skills_avg))
+  ),
+  Mean = c(
+    round(mean(analytical_2024$d11, na.rm = TRUE), 1),
+    round(mean(analytical_2024$education_years, na.rm = TRUE), 1),
+    round(mean(analytical_2024$political_lr, na.rm = TRUE), 2),
+    round(mean(analytical_2024$digital_skills_avg, na.rm = TRUE), 2)
+  ),
+  SD = c(
+    round(sd(analytical_2024$d11, na.rm = TRUE), 1),
+    round(sd(analytical_2024$education_years, na.rm = TRUE), 1),
+    round(sd(analytical_2024$political_lr, na.rm = TRUE), 2),
+    round(sd(analytical_2024$digital_skills_avg, na.rm = TRUE), 2)
+  ),
+  Min = c(
+    round(min(analytical_2024$d11, na.rm = TRUE), 0),
+    round(min(analytical_2024$education_years, na.rm = TRUE), 0),
+    round(min(analytical_2024$political_lr, na.rm = TRUE), 0),
+    round(min(analytical_2024$digital_skills_avg, na.rm = TRUE), 2)
+  ),
+  Max = c(
+    round(max(analytical_2024$d11, na.rm = TRUE), 0),
+    round(max(analytical_2024$education_years, na.rm = TRUE), 0),
+    round(max(analytical_2024$political_lr, na.rm = TRUE), 0),
+    round(max(analytical_2024$digital_skills_avg, na.rm = TRUE), 2)
+  )
+)
+
+# Individual-level categorical variables
+gender_table_2024 <- table(analytical_2024$gender_binary)
+community_table_2024 <- table(analytical_2024$community_size)
+
+individual_categorical_2024 <- data.frame(
+  Variable = c("Gender", "", "Community Size", "", ""),
+  Category = c("Male", "Non-male", "Rural area", "Towns and suburbs", "Cities"),
+  N = c(
+    as.numeric(gender_table_2024["Male"]),
+    as.numeric(gender_table_2024["Non-male"]),
+    as.numeric(community_table_2024["Rural area"]),
+    as.numeric(community_table_2024["Towns and suburbs"]),
+    as.numeric(community_table_2024["Cities"])
+  ),
+  Percentage = c(
+    round(as.numeric(gender_table_2024["Male"]) / sum(gender_table_2024) * 100, 1),
+    round(as.numeric(gender_table_2024["Non-male"]) / sum(gender_table_2024) * 100, 1),
+    round(as.numeric(community_table_2024["Rural area"]) / sum(community_table_2024) * 100, 1),
+    round(as.numeric(community_table_2024["Towns and suburbs"]) / sum(community_table_2024) * 100, 1),
+    round(as.numeric(community_table_2024["Cities"]) / sum(community_table_2024) * 100, 1)
+  )
+)
+
+# AI attitudes WITH MISSING VALUES
+ai_attitudes_2024 <- list(
+  job_losses = calculate_ai_attitudes_with_missing(analytical_2024, "robot_job_losses", "qb6_1"),
+  good_society = calculate_ai_attitudes_with_missing(analytical_2024, "robot_good_society", "qb6_2"),
+  careful_mgmt = calculate_ai_attitudes_with_missing(analytical_2024, "robot_careful_mgmt", "qb6_3"),
+  steal_jobs = calculate_ai_attitudes_with_missing(analytical_2024, "robot_steal_jobs", "qb6_5")
+)
+
+# Country-level statistics with updated labels
+country_stats_2024 <- analytical_2024 %>%
+  group_by(country_name) %>%
+  summarise(
+    N = n(),
+    `Total Fertility Rate` = round(first(fertility_rate_2023), 3),
+    `Population 65+(%)` = round(first(pop_65_above_2023), 1),
+    `GDP per Capita($)` = round(first(gdp_per_capita_2023), 0),
+    `IHDI` = round(first(ihdi_2023), 3),
+    `Aging-Fertility Ratio` = round(first(aging_fertility_ratio), 2),
+    .groups = 'drop'
+  ) %>%
+  arrange(country_name)
+
+# Sample sizes by case
+sample_sizes_2024 <- data.frame()
+for (i in 1:length(case_keys)) {
+  for (j in 1:length(outcomes)) {
+    sample_name <- paste0(case_keys[i], "_", outcomes[j])
+    sample_data <- all_samples_2024[[sample_name]]
+    
+    sample_sizes_2024 <- rbind(sample_sizes_2024, data.frame(
+      Case = cases[i],
+      Outcome = outcome_names[j],
+      N = nrow(sample_data),
+      Countries = length(unique(sample_data$isocntry))
+    ))
+  }
+}
+```
+
+```{r create_custom_table_theme}
+# Create custom table theme with header and row names in grey, content in white
+library(gridExtra)
+library(grid)
+
+create_custom_table_theme <- function(base_size = 9) {
+  ttheme_minimal(
+    base_size = base_size,
+    core = list(
+      fg_params = list(col = "black"),
+      bg_params = list(fill = "white", col = "black", lwd = 0.5)
+    ),
+    colhead = list(
+      fg_params = list(col = "black", fontface = "bold"),
+      bg_params = list(fill = "lightgrey", col = "black", lwd = 0.5)
+    ),
+    rowhead = list(
+      fg_params = list(col = "black", fontface = "bold"), 
+      bg_params = list(fill = "lightgrey", col = "black", lwd = 0.5)
+    )
+  )
+}
+```
+
+```{r create_main_statistics_2017_with_missing}
+# Create main statistics table for 2017 (WITH MISSING VALUES FOR AI ATTITUDES)
+
+create_main_table_2017_with_missing <- function() {
+  
+  # Create table components
+  table_components_2017 <- list(
+    
+    # Panel A: Sample Overview
+    sample_overview = data.frame(
+      Statistic = c("Total Sample Size", "Number of Countries", "Total Observations across Cases"),
+      Value = c(nrow(analytical_2017), length(unique(analytical_2017$country_name)), 
+                sum(sample_sizes_2017$N))
+    ),
+    
+    # Panel B: Individual-level Continuous Variables
+    continuous_vars = individual_continuous_2017,
+    
+    # Panel C: Individual-level Categorical Variables (Gender)
+    gender_dist = data.frame(
+      Category = c("Male", "Non-male"),
+      N = individual_categorical_2017$N[1:2],
+      Percentage = individual_categorical_2017$Percentage[1:2]
+    ),
+    
+    # Panel D: Individual-level Categorical Variables (Community Size)
+    community_dist = data.frame(
+      Category = c("Rural area", "Towns and suburbs", "Cities"),
+      N = individual_categorical_2017$N[3:5],
+      Percentage = individual_categorical_2017$Percentage[3:5]
+    ),
+    
+    # Panel E: AI Attitudes (Job Losses) - WITH MISSING VALUES
+    ai_job_losses = ai_attitudes_2017$job_losses,
+    
+    # Panel F: AI Attitudes (Good for Society) - WITH MISSING VALUES
+    ai_good_society = ai_attitudes_2017$good_society,
+    
+    # Panel G: AI Attitudes (Careful Management) - WITH MISSING VALUES
+    ai_careful_mgmt = ai_attitudes_2017$careful_mgmt,
+    
+    # Panel H: AI Attitudes (Steal Jobs) - WITH MISSING VALUES
+    ai_steal_jobs = ai_attitudes_2017$steal_jobs,
+    
+    # Panel I: Country-level Statistics Summary
+    country_summary = data.frame(
+      Variable = c("Total Fertility Rate", "Population 65+(%)", "GDP per Capita($)", "IHDI", "Aging-Fertility Ratio"),
+      Mean = c(
+        round(mean(country_stats_2017$`Total Fertility Rate`), 3),
+        round(mean(country_stats_2017$`Population 65+(%)`), 1),
+        round(mean(country_stats_2017$`GDP per Capita($)`), 0),
+        round(mean(country_stats_2017$IHDI), 3),
+        round(mean(country_stats_2017$`Aging-Fertility Ratio`), 2)
+      ),
+      SD = c(
+        round(sd(country_stats_2017$`Total Fertility Rate`), 3),
+        round(sd(country_stats_2017$`Population 65+(%)`), 1),
+        round(sd(country_stats_2017$`GDP per Capita($)`), 0),
+        round(sd(country_stats_2017$IHDI), 3),
+        round(sd(country_stats_2017$`Aging-Fertility Ratio`), 2)
+      )
+    )
+  )
+  
+  # Create individual table grobs with custom theme
+  theme <- create_custom_table_theme(10)
+  theme_small <- create_custom_table_theme(9)
+  
+  # Sample Overview
+  t1 <- tableGrob(table_components_2017$sample_overview, theme = theme, rows = NULL)
+  
+  # Continuous Variables
+  t2 <- tableGrob(table_components_2017$continuous_vars, theme = theme_small, rows = NULL)
+  
+  # Gender Distribution
+  t3 <- tableGrob(table_components_2017$gender_dist, theme = theme_small, rows = NULL)
+  
+  # Community Distribution
+  t4 <- tableGrob(table_components_2017$community_dist, theme = theme_small, rows = NULL)
+  
+  # AI Attitudes - Job Losses (with missing values)
+  t5 <- tableGrob(table_components_2017$ai_job_losses, theme = theme_small, rows = NULL)
+  
+  # AI Attitudes - Good for Society (with missing values)
+  t6 <- tableGrob(table_components_2017$ai_good_society, theme = theme_small, rows = NULL)
+  
+  # AI Attitudes - Careful Management (with missing values)
+  t7 <- tableGrob(table_components_2017$ai_careful_mgmt, theme = theme_small, rows = NULL)
+  
+  # AI Attitudes - Steal Jobs (with missing values)
+  t8 <- tableGrob(table_components_2017$ai_steal_jobs, theme = theme_small, rows = NULL)
+  
+  # Country Summary
+  t9 <- tableGrob(table_components_2017$country_summary, theme = theme_small, rows = NULL)
+  
+  # Create layout with proper spacing
+  grid.arrange(
+    # Title
+    textGrob("Descriptive Statistics: 2017 Eurobarometer 87.1", 
+             gp = gpar(fontsize = 16, fontface = "bold")),
+    
+    # Row 1: Sample Overview and Individual Variables
+    arrangeGrob(
+      # Left column
+      arrangeGrob(
+        textGrob("A. Sample Overview", gp = gpar(fontsize = 11, fontface = "bold"), hjust = 0, x = 0.05),
+        t1,
+        textGrob("B. Individual-Level Continuous Variables", gp = gpar(fontsize = 11, fontface = "bold"), hjust = 0, x = 0.05),
+        t2,
+        nrow = 4, heights = c(0.12, 0.35, 0.12, 0.41)
+      ),
+      
+      # Right column
+      arrangeGrob(
+        textGrob("C. Gender Distribution", gp = gpar(fontsize = 11, fontface = "bold"), hjust = 0, x = 0.05),
+        t3,
+        textGrob("D. Community Size Distribution", gp = gpar(fontsize = 11, fontface = "bold"), hjust = 0, x = 0.05),
+        t4,
+        nrow = 4, heights = c(0.12, 0.25, 0.12, 0.51)
+      ),
+      ncol = 2, widths = c(0.52, 0.48)
+    ),
+    
+    # Row 2: AI Attitudes
+    arrangeGrob(
+      # Left column
+      arrangeGrob(
+        textGrob("E. AI Attitudes: Job Losses from AI/Robots", gp = gpar(fontsize = 10, fontface = "bold"), hjust = 0, x = 0.05),
+        t5,
+        textGrob("F. AI Attitudes: AI/Robots Good for Society", gp = gpar(fontsize = 10, fontface = "bold"), hjust = 0, x = 0.05),
+        t6,
+        nrow = 4, heights = c(0.08, 0.42, 0.08, 0.42)
+      ),
+      
+      # Right column
+      arrangeGrob(
+        textGrob("G. AI Attitudes: AI/Robots Need Careful Management", gp = gpar(fontsize = 10, fontface = "bold"), hjust = 0, x = 0.05),
+        t7,
+        textGrob("H. AI Attitudes: AI/Robots Steal Jobs", gp = gpar(fontsize = 10, fontface = "bold"), hjust = 0, x = 0.05),
+        t8,
+        nrow = 4, heights = c(0.08, 0.42, 0.08, 0.42)
+      ),
+      ncol = 2
+    ),
+    
+    # Row 3: Country Summary
+    arrangeGrob(
+      textGrob("I. Country-Level Variables Summary", gp = gpar(fontsize = 11, fontface = "bold"), hjust = 0.5),
+      t9,
+      nrow = 2, heights = c(0.15, 0.85)
+    ),
+    
+    nrow = 4,
+    heights = c(0.06, 0.38, 0.38, 0.18)
+  )
+}
+
+# Generate and save main statistics for 2017
+main_stats_2017 <- create_main_table_2017_with_missing()
+save_plot(main_stats_2017, "Descriptive_Statistics_2017_Main", width = 14, height = 12)
+```
+
+```{r create_country_statistics_2017}
+# Create country-level statistics table for 2017 (single table)
+
+create_country_table_2017 <- function() {
+  
+  # Create table grob
+  theme <- create_custom_table_theme(9)
+  
+  t1 <- tableGrob(country_stats_2017, theme = theme, rows = NULL)
+  
+  # Create layout
+  grid.arrange(
+    # Title
+    textGrob("Descriptive Statistics: 2017 Eurobarometer 87.1 - Country-Level Statistics", 
+             gp = gpar(fontsize = 16, fontface = "bold")),
+    
+    # Country table centered
+    arrangeGrob(
+      t1,
+      ncol = 1
+    ),
+    
+    nrow = 2,
+    heights = c(0.08, 0.92)
+  )
+}
+
+# Generate and save country statistics for 2017
+country_stats_plot_2017 <- create_country_table_2017()
+save_plot(country_stats_plot_2017, "Descriptive_Statistics_2017_Countries", width = 14, height = 10)
+```
+
+```{r create_main_statistics_2024_with_missing}
+# Create main statistics table for 2024 (WITH MISSING VALUES FOR AI ATTITUDES)
+
+create_main_table_2024_with_missing <- function() {
+  
+  # Create table components
+  table_components_2024 <- list(
+    
+    # Panel A: Sample Overview
+    sample_overview = data.frame(
+      Statistic = c("Total Sample Size", "Number of Countries", "Total Observations across Cases"),
+      Value = c(nrow(analytical_2024), length(unique(analytical_2024$country_name)), 
+                sum(sample_sizes_2024$N))
+    ),
+    
+    # Panel B: Individual-level Continuous Variables
+    continuous_vars = individual_continuous_2024,
+    
+    # Panel C: Individual-level Categorical Variables (Gender)
+    gender_dist = data.frame(
+      Category = c("Male", "Non-male"),
+      N = individual_categorical_2024$N[1:2],
+      Percentage = individual_categorical_2024$Percentage[1:2]
+    ),
+    
+    # Panel D: Individual-level Categorical Variables (Community Size)
+    community_dist = data.frame(
+      Category = c("Rural area", "Towns and suburbs", "Cities"),
+      N = individual_categorical_2024$N[3:5],
+      Percentage = individual_categorical_2024$Percentage[3:5]
+    ),
+    
+    # Panel E: AI Attitudes (Job Losses) - WITH MISSING VALUES
+    ai_job_losses = ai_attitudes_2024$job_losses,
+    
+    # Panel F: AI Attitudes (Good for Society) - WITH MISSING VALUES
+    ai_good_society = ai_attitudes_2024$good_society,
+    
+    # Panel G: AI Attitudes (Careful Management) - WITH MISSING VALUES
+    ai_careful_mgmt = ai_attitudes_2024$careful_mgmt,
+    
+    # Panel H: AI Attitudes (Steal Jobs) - WITH MISSING VALUES
+    ai_steal_jobs = ai_attitudes_2024$steal_jobs,
+    
+    # Panel I: Country-level Statistics Summary
+    country_summary = data.frame(
+      Variable = c("Total Fertility Rate", "Population 65+(%)", "GDP per Capita($)", "IHDI", "Aging-Fertility Ratio"),
+      Mean = c(
+        round(mean(country_stats_2024$`Total Fertility Rate`), 3),
+        round(mean(country_stats_2024$`Population 65+(%)`), 1),
+        round(mean(country_stats_2024$`GDP per Capita($)`), 0),
+        round(mean(country_stats_2024$IHDI), 3),
+        round(mean(country_stats_2024$`Aging-Fertility Ratio`), 2)
+      ),
+      SD = c(
+        round(sd(country_stats_2024$`Total Fertility Rate`), 3),
+        round(sd(country_stats_2024$`Population 65+(%)`), 1),
+        round(sd(country_stats_2024$`GDP per Capita($)`), 0),
+        round(sd(country_stats_2024$IHDI), 3),
+        round(sd(country_stats_2024$`Aging-Fertility Ratio`), 2)
+      )
+    )
+  )
+  
+  # Create individual table grobs with custom theme
+  theme <- create_custom_table_theme(10)
+  theme_small <- create_custom_table_theme(9)
+  
+  # Sample Overview
+  t1 <- tableGrob(table_components_2024$sample_overview, theme = theme, rows = NULL)
+  
+  # Continuous Variables
+  t2 <- tableGrob(table_components_2024$continuous_vars, theme = theme_small, rows = NULL)
+  
+  # Gender Distribution
+  t3 <- tableGrob(table_components_2024$gender_dist, theme = theme_small, rows = NULL)
+  
+  # Community Distribution
+  t4 <- tableGrob(table_components_2024$community_dist, theme = theme_small, rows = NULL)
+  
+  # AI Attitudes - Job Losses (with missing values)
+  t5 <- tableGrob(table_components_2024$ai_job_losses, theme = theme_small, rows = NULL)
+  
+  # AI Attitudes - Good for Society (with missing values)
+  t6 <- tableGrob(table_components_2024$ai_good_society, theme = theme_small, rows = NULL)
+  
+  # AI Attitudes - Careful Management (with missing values)
+  t7 <- tableGrob(table_components_2024$ai_careful_mgmt, theme = theme_small, rows = NULL)
+  
+  # AI Attitudes - Steal Jobs (with missing values)
+  t8 <- tableGrob(table_components_2024$ai_steal_jobs, theme = theme_small, rows = NULL)
+  
+  # Country Summary
+  t9 <- tableGrob(table_components_2024$country_summary, theme = theme_small, rows = NULL)
+  
+  # Create layout with proper spacing
+  grid.arrange(
+    # Title
+    textGrob("Descriptive Statistics: 2024 Eurobarometer 101.4", 
+             gp = gpar(fontsize = 16, fontface = "bold")),
+    
+    # Row 1: Sample Overview and Individual Variables
+    arrangeGrob(
+      # Left column
+      arrangeGrob(
+        textGrob("A. Sample Overview", gp = gpar(fontsize = 11, fontface = "bold"), hjust = 0, x = 0.05),
+        t1,
+        textGrob("B. Individual-Level Continuous Variables", gp = gpar(fontsize = 11, fontface = "bold"), hjust = 0, x = 0.05),
+        t2,
+        nrow = 4, heights = c(0.12, 0.35, 0.12, 0.41)
+      ),
+      
+      # Right column
+      arrangeGrob(
+        textGrob("C. Gender Distribution", gp = gpar(fontsize = 11, fontface = "bold"), hjust = 0, x = 0.05),
+        t3,
+        textGrob("D. Community Size Distribution", gp = gpar(fontsize = 11, fontface = "bold"), hjust = 0, x = 0.05),
+        t4,
+        nrow = 4, heights = c(0.12, 0.25, 0.12, 0.51)
+      ),
+      ncol = 2, widths = c(0.52, 0.48)
+    ),
+    
+    # Row 2: AI Attitudes
+    arrangeGrob(
+      # Left column
+      arrangeGrob(
+        textGrob("E. AI Attitudes: Job Losses from AI/Robots", gp = gpar(fontsize = 10, fontface = "bold"), hjust = 0, x = 0.05),
+        t5,
+        textGrob("F. AI Attitudes: AI/Robots Good for Society", gp = gpar(fontsize = 10, fontface = "bold"), hjust = 0, x = 0.05),
+        t6,
+        nrow = 4, heights = c(0.08, 0.42, 0.08, 0.42)
+      ),
+      
+      # Right column
+      arrangeGrob(
+        textGrob("G. AI Attitudes: AI/Robots Need Careful Management", gp = gpar(fontsize = 10, fontface = "bold"), hjust = 0, x = 0.05),
+        t7,
+        textGrob("H. AI Attitudes: AI/Robots Steal Jobs", gp = gpar(fontsize = 10, fontface = "bold"), hjust = 0, x = 0.05),
+        t8,
+        nrow = 4, heights = c(0.08, 0.42, 0.08, 0.42)
+      ),
+      ncol = 2
+    ),
+    
+    # Row 3: Country Summary
+    arrangeGrob(
+      textGrob("I. Country-Level Variables Summary", gp = gpar(fontsize = 11, fontface = "bold"), hjust = 0.5),
+      t9,
+      nrow = 2, heights = c(0.15, 0.85)
+    ),
+    
+    nrow = 4,
+    heights = c(0.06, 0.38, 0.38, 0.18)
+  )
+}
+
+# Generate and save main statistics for 2024
+main_stats_2024 <- create_main_table_2024_with_missing()
+save_plot(main_stats_2024, "Descriptive_Statistics_2024_Main", width = 14, height = 12)
+```
+
+```{r create_country_statistics_2024}
+# Create country-level statistics table for 2024 (single table)
+
+create_country_table_2024 <- function() {
+  
+  # Create table grob
+  theme <- create_custom_table_theme(9)
+  
+  t1 <- tableGrob(country_stats_2024, theme = theme, rows = NULL)
+  
+  # Create layout
+  grid.arrange(
+    # Title
+    textGrob("Descriptive Statistics: 2024 Eurobarometer 101.4 - Country-Level Statistics", 
+             gp = gpar(fontsize = 16, fontface = "bold")),
+    
+    # Country table centered
+    arrangeGrob(
+      t1,
+      ncol = 1
+    ),
+    
+    nrow = 2,
+    heights = c(0.08, 0.92)
+  )
+}
+
+# Generate and save country statistics for 2024
+country_stats_plot_2024 <- create_country_table_2024()
+save_plot(country_stats_plot_2024, "Descriptive_Statistics_2024_Countries", width = 14, height = 10)
+```
+
+```{r save_all_data}
+# Save all data as CSV files for reference
+save_table(individual_continuous_2017, "2017_Individual_Continuous_Variables")
+save_table(individual_categorical_2017, "2017_Individual_Categorical_Variables")
+
+# Save AI attitudes with missing values as separate CSV files
+save_table(ai_attitudes_2017$job_losses, "2017_AI_Attitudes_Job_Losses_with_Missing")
+save_table(ai_attitudes_2017$good_society, "2017_AI_Attitudes_Good_Society_with_Missing")
+save_table(ai_attitudes_2017$careful_mgmt, "2017_AI_Attitudes_Careful_Management_with_Missing")
+save_table(ai_attitudes_2017$steal_jobs, "2017_AI_Attitudes_Steal_Jobs_with_Missing")
+
+save_table(country_stats_2017, "2017_Country_Level_Statistics")
+save_table(sample_sizes_2017, "2017_Sample_Sizes_by_Case")
+
+save_table(individual_continuous_2024, "2024_Individual_Continuous_Variables")
+save_table(individual_categorical_2024, "2024_Individual_Categorical_Variables")
+
+# Save AI attitudes with missing values as separate CSV files
+save_table(ai_attitudes_2024$job_losses, "2024_AI_Attitudes_Job_Losses_with_Missing")
+save_table(ai_attitudes_2024$good_society, "2024_AI_Attitudes_Good_Society_with_Missing")
+save_table(ai_attitudes_2024$careful_mgmt, "2024_AI_Attitudes_Careful_Management_with_Missing")
+save_table(ai_attitudes_2024$steal_jobs, "2024_AI_Attitudes_Steal_Jobs_with_Missing")
+
+save_table(country_stats_2024, "2024_Country_Level_Statistics")
+save_table(sample_sizes_2024, "2024_Sample_Sizes_by_Case")
+
+# Summary comparison table
+summary_comparison <- data.frame(
+  Variable = c("Total Sample Size", "Number of Countries", "Mean Age", "% Non-male", 
+               "Mean Education Years", "Mean Digital Skills", "Mean Total Fertility Rate",
+               "Mean Population 65+(%)", "Mean GDP per Capita($)", "Mean IHDI"),
+  Year_2017 = c(
+    nrow(analytical_2017),
+    length(unique(analytical_2017$country_name)),
+    round(mean(analytical_2017$d11, na.rm = TRUE), 1),
+    round(mean(analytical_2017$gender_binary == "Non-male", na.rm = TRUE) * 100, 1),
+    round(mean(analytical_2017$education_years, na.rm = TRUE), 1),
+    round(mean(analytical_2017$digital_skills_avg, na.rm = TRUE), 2),
+    round(mean(country_stats_2017$`Total Fertility Rate`), 3),
+    round(mean(country_stats_2017$`Population 65+(%)`), 1),
+    round(mean(country_stats_2017$`GDP per Capita($)`), 0),
+    round(mean(country_stats_2017$IHDI), 3)
+  ),
+  Year_2024 = c(
+    nrow(analytical_2024),
+    length(unique(analytical_2024$country_name)),
+    round(mean(analytical_2024$d11, na.rm = TRUE), 1),
+    round(mean(analytical_2024$gender_binary == "Non-male", na.rm = TRUE) * 100, 1),
+    round(mean(analytical_2024$education_years, na.rm = TRUE), 1),
+    round(mean(analytical_2024$digital_skills_avg, na.rm = TRUE), 2),
+    round(mean(country_stats_2024$`Total Fertility Rate`), 3),
+    round(mean(country_stats_2024$`Population 65+(%)`), 1),
+    round(mean(country_stats_2024$`GDP per Capita($)`), 0),
+    round(mean(country_stats_2024$IHDI), 3)
+  )
+)
+
+save_table(summary_comparison, "Summary_Comparison_2017_vs_2024")
+
+print(kable(summary_comparison, caption = "Summary Comparison: 2017 vs 2024"))
+```
+
+```{r create_occupation_analysis}
+# Create occupation distribution analysis for analytical samples
+# This code analyzes occupation distribution across countries for respondents
+# who were included in the actual analysis (no missing values on key variables)
+
+# Function to prepare occupation data and create labels
+prepare_occupation_data <- function(data, year) {
+  data %>%
+    filter(!is.na(d15a_r2)) %>%  # Only include respondents with occupation data
+    mutate(
+      occupation = factor(d15a_r2,
+                         levels = 1:8,
+                         labels = c("Self-employed", "Managers", "Other white collars", 
+                                   "Manual workers", "House persons", "Unemployed", 
+                                   "Retired", "Students")),
+      year = year,
+      country_name = factor(country_name)  # Convert to factor for alphabetical ordering
+    ) %>%
+    group_by(country_name, occupation) %>%
+    summarise(n = n(), .groups = 'drop') %>%
+    group_by(country_name) %>%
+    mutate(
+      total = sum(n),
+      percentage = round(n / total * 100, 1)
+    ) %>%
+    ungroup()
+}
+
+# Prepare occupation data for both years
+occupation_2017 <- prepare_occupation_data(analytical_2017, "2017")
+occupation_2024 <- prepare_occupation_data(analytical_2024, "2024")
+
+# Create color palette for occupations
+occupation_colors <- c(
+  "Self-employed" = "#1f77b4",
+  "Managers" = "#ff7f0e", 
+  "Other white collars" = "#2ca02c",
+  "Manual workers" = "#d62728",
+  "House persons" = "#9467bd",
+  "Unemployed" = "#8c564b",
+  "Retired" = "#e377c2",
+  "Students" = "#7f7f7f"
+)
+
+# Function to create occupation distribution plot
+create_occupation_plot <- function(data, year, title_suffix) {
+  
+  # Calculate sample sizes for subtitle
+  sample_sizes <- data %>%
+    group_by(country_name) %>%
+    summarise(total_n = sum(n), .groups = 'drop') %>%
+    arrange(country_name)
+  
+  total_sample <- sum(sample_sizes$total_n)
+  n_countries <- nrow(sample_sizes)
+  
+  subtitle_text <- paste0("Analytical Sample: ", total_sample, " respondents across ", 
+                         n_countries, " countries")
+  
+  # Order countries alphabetically
+  data <- data %>%
+    mutate(country_name = factor(country_name, levels = sort(unique(country_name))))
+  
+  ggplot(data, aes(x = country_name, y = percentage, fill = occupation)) +
+    geom_bar(stat = "identity", color = "white", size = 0.2) +
+    scale_fill_manual(values = occupation_colors, name = "Occupation") +
+    coord_flip() +
+    scale_x_discrete(limits = rev(levels(data$country_name))) +  # Reverse for bottom-to-top alphabetical
+    labs(
+      title = paste0("Occupation Distribution by Country: ", title_suffix),
+      subtitle = subtitle_text,
+      x = "Country",
+      y = "Percentage (%)",
+      caption = "Note: Only includes respondents with complete data on all analytical variables"
+    ) +
+    theme_minimal(base_size = 10) +
+    theme(
+      plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
+      plot.subtitle = element_text(size = 11, hjust = 0.5, color = "gray40"),
+      plot.caption = element_text(size = 9, color = "gray50"),
+      axis.text.y = element_text(size = 8),
+      axis.text.x = element_text(size = 9),
+      axis.title = element_text(size = 11, face = "bold"),
+      legend.title = element_text(size = 10, face = "bold"),
+      legend.text = element_text(size = 9),
+      legend.position = "bottom",
+      legend.box = "horizontal",
+      panel.grid.major.y = element_blank(),
+      panel.grid.minor = element_blank(),
+      strip.text = element_text(size = 10, face = "bold")
+    ) +
+    guides(fill = guide_legend(nrow = 2, byrow = TRUE))
+}
+
+# Create plots for both years
+occupation_plot_2017 <- create_occupation_plot(occupation_2017, "2017", "Eurobarometer 87.1 (2017)")
+occupation_plot_2024 <- create_occupation_plot(occupation_2024, "2024", "Eurobarometer 101.4 (2024)")
+
+# Save the plots
+save_plot(occupation_plot_2017, "Occupation_Distribution_2017", width = 14, height = 10)
+save_plot(occupation_plot_2024, "Occupation_Distribution_2024", width = 14, height = 10)
+
+# Display the plots
+print(occupation_plot_2017)
+print(occupation_plot_2024)
+```
+
+```{r create_occupation_summary_tables}
+# Create summary tables for occupation distribution
+
+# Function to create occupation summary table
+create_occupation_summary <- function(data, year) {
+  # Overall distribution
+  overall_dist <- data %>%
+    group_by(occupation) %>%
+    summarise(
+      total_n = sum(n),
+      .groups = 'drop'
+    ) %>%
+    mutate(
+      overall_percentage = round(total_n / sum(total_n) * 100, 1)
+    ) %>%
+    arrange(desc(total_n))
+  
+  # Country-level statistics
+  country_stats <- data %>%
+    group_by(occupation) %>%
+    summarise(
+      mean_percentage = round(mean(percentage), 1),
+      sd_percentage = round(sd(percentage), 1),
+      min_percentage = round(min(percentage), 1),
+      max_percentage = round(max(percentage), 1),
+      .groups = 'drop'
+    )
+  
+  # Combine the tables
+  summary_table <- overall_dist %>%
+    left_join(country_stats, by = "occupation") %>%
+    select(occupation, total_n, overall_percentage, mean_percentage, 
+           sd_percentage, min_percentage, max_percentage)
+  
+  return(summary_table)
+}
+
+# Create summary tables
+occupation_summary_2017 <- create_occupation_summary(occupation_2017, "2017")
+occupation_summary_2024 <- create_occupation_summary(occupation_2024, "2024")
+
+# Create comparison table
+occupation_comparison <- occupation_summary_2017 %>%
+  select(occupation, total_n_2017 = total_n, overall_pct_2017 = overall_percentage) %>%
+  full_join(
+    occupation_summary_2024 %>%
+      select(occupation, total_n_2024 = total_n, overall_pct_2024 = overall_percentage),
+    by = "occupation"
+  ) %>%
+  mutate(
+    change_n = total_n_2024 - total_n_2017,
+    change_pct = overall_pct_2024 - overall_pct_2017
+  ) %>%
+  arrange(desc(overall_pct_2024))
+
+# Print summary tables
+cat("\\n=== OCCUPATION DISTRIBUTION SUMMARY ===\\n")
+cat("\\n2017 Eurobarometer 87.1:\\n")
+print(kable(occupation_summary_2017, 
+            col.names = c("Occupation", "N", "Overall %", "Mean %", "SD %", "Min %", "Max %"),
+            caption = "Occupation Distribution Summary - 2017"))
+
+cat("\\n2024 Eurobarometer 101.4:\\n")
+print(kable(occupation_summary_2024,
+            col.names = c("Occupation", "N", "Overall %", "Mean %", "SD %", "Min %", "Max %"), 
+            caption = "Occupation Distribution Summary - 2024"))
+
+cat("\\nComparison 2017 vs 2024:\\n")
+print(kable(occupation_comparison,
+            col.names = c("Occupation", "N 2017", "% 2017", "N 2024", "% 2024", "Change N", "Change %"),
+            caption = "Occupation Distribution Comparison"))
+
+# Save tables as CSV
+save_table(occupation_summary_2017, "Occupation_Summary_2017")
+save_table(occupation_summary_2024, "Occupation_Summary_2024") 
+save_table(occupation_comparison, "Occupation_Comparison_2017_vs_2024")
+
+# Save detailed country-level data
+save_table(occupation_2017, "Occupation_by_Country_2017")
+save_table(occupation_2024, "Occupation_by_Country_2024")
+```
+
+```{r create_occupation_heatmap}
+# Create heatmap to better visualize cross-country variation
+
+# Function to create occupation heatmap
+create_occupation_heatmap <- function(data, year, title_suffix) {
+  
+  # Prepare data for heatmap
+  heatmap_data <- data %>%
+    select(country_name, occupation, percentage) %>%
+    pivot_wider(names_from = occupation, values_from = percentage, values_fill = 0) %>%
+    pivot_longer(cols = -country_name, names_to = "occupation", values_to = "percentage") %>%
+    mutate(
+      occupation = factor(occupation, 
+                         levels = c("Self-employed", "Managers", "Other white collars", 
+                                   "Manual workers", "House persons", "Unemployed", 
+                                   "Retired", "Students")),
+      country_name = factor(country_name, levels = sort(unique(country_name)))
+    )
+  
+  ggplot(heatmap_data, aes(x = occupation, y = country_name, fill = percentage)) +
+    geom_tile(color = "white", size = 0.5) +
+    scale_fill_gradient2(low = "white", mid = "lightblue", high = "darkblue", 
+                        midpoint = 15, name = "Percentage\n(%)") +
+    labs(
+      title = paste0("Occupation Distribution Heatmap: ", title_suffix),
+      subtitle = "Color intensity indicates percentage within each country",
+      x = "Occupation",
+      y = "Country"
+    ) +
+    theme_minimal(base_size = 10) +
+    theme(
+      plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
+      plot.subtitle = element_text(size = 11, hjust = 0.5, color = "gray40"),
+      axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+      axis.text.y = element_text(size = 8),
+      axis.title = element_text(size = 11, face = "bold"),
+      legend.title = element_text(size = 10, face = "bold"),
+      panel.grid = element_blank()
+    ) +
+    geom_text(aes(label = paste0(percentage, "%")), 
+             size = 2.5, color = "black")  # Show all percentages
+}
+
+# Create heatmaps
+occupation_heatmap_2017 <- create_occupation_heatmap(occupation_2017, "2017", "Eurobarometer 87.1 (2017)")
+occupation_heatmap_2024 <- create_occupation_heatmap(occupation_2024, "2024", "Eurobarometer 101.4 (2024)")
+
+# Save heatmaps
+save_plot(occupation_heatmap_2017, "Occupation_Heatmap_2017", width = 12, height = 10)
+save_plot(occupation_heatmap_2024, "Occupation_Heatmap_2024", width = 12, height = 10)
+
+# Display heatmaps
+print(occupation_heatmap_2017)
+print(occupation_heatmap_2024)
+```
+
+```{r occupation_country_variation_analysis}
+# Analyze cross-country variation in occupation distribution
+
+# Function to calculate coefficient of variation for each occupation
+calculate_occupation_variation <- function(data, year) {
+  variation_stats <- data %>%
+    group_by(occupation) %>%
+    summarise(
+      mean_pct = mean(percentage),
+      sd_pct = sd(percentage),
+      cv = sd_pct / mean_pct,  # Coefficient of variation
+      min_pct = min(percentage),
+      max_pct = max(percentage),
+      range_pct = max_pct - min_pct,
+      .groups = 'drop'
+    ) %>%
+    mutate(year = year) %>%
+    arrange(desc(cv))
+  
+  return(variation_stats)
+}
+
+# Calculate variation statistics
+variation_2017 <- calculate_occupation_variation(occupation_2017, "2017")
+variation_2024 <- calculate_occupation_variation(occupation_2024, "2024")
+
+# Combine for comparison
+variation_comparison <- variation_2017 %>%
+  select(occupation, cv_2017 = cv, range_2017 = range_pct) %>%
+  full_join(
+    variation_2024 %>%
+      select(occupation, cv_2024 = cv, range_2024 = range_pct),
+    by = "occupation"
+  ) %>%
+  mutate(
+    cv_change = cv_2024 - cv_2017,
+    range_change = range_2024 - range_2017
+  ) %>%
+  arrange(desc(cv_2024))
+
+cat("\\n=== CROSS-COUNTRY VARIATION ANALYSIS ===\\n")
+cat("\\nCoefficient of Variation (CV) indicates relative variability across countries\\n")
+cat("Higher CV = more variation between countries\\n\\n")
+
+print(kable(variation_comparison,
+            col.names = c("Occupation", "CV 2017", "Range 2017", "CV 2024", "Range 2024", "CV Change", "Range Change"),
+            digits = 3,
+            caption = "Cross-Country Variation in Occupation Distribution"))
+
+# Save variation analysis
+save_table(variation_2017, "Occupation_Variation_2017")
+save_table(variation_2024, "Occupation_Variation_2024")
+save_table(variation_comparison, "Occupation_Variation_Comparison")
+
+# Identify countries with most extreme occupation profiles
+extreme_profiles_2017 <- occupation_2017 %>%
+  group_by(country_name) %>%
+  summarise(
+    dominant_occupation = occupation[which.max(percentage)][1],
+    max_percentage = max(percentage),
+    .groups = 'drop'
+  ) %>%
+  arrange(desc(max_percentage))
+
+extreme_profiles_2024 <- occupation_2024 %>%
+  group_by(country_name) %>%
+  summarise(
+    dominant_occupation = occupation[which.max(percentage)][1],
+    max_percentage = max(percentage),
+    .groups = 'drop'
+  ) %>%
+  arrange(desc(max_percentage))
+
+cat("\\n=== COUNTRIES WITH MOST DOMINANT OCCUPATION CATEGORIES ===\\n")
+cat("\\n2017:\\n")
+print(head(extreme_profiles_2017, 10))
+cat("\\n2024:\\n")  
+print(head(extreme_profiles_2024, 10))
+
+save_table(extreme_profiles_2017, "Extreme_Occupation_Profiles_2017")
+save_table(extreme_profiles_2024, "Extreme_Occupation_Profiles_2024")
+```
+
+```{r create_social_class_analysis}
+# Create social class distribution analysis for analytical samples
+# This code analyzes social class distribution across countries for respondents
+# who were included in the actual analysis (no missing values on key variables)
+
+# Function to prepare social class data and create labels
+prepare_social_class_data <- function(data, year) {
+  data %>%
+    filter(!is.na(d63)) %>%  # Only include respondents with social class data
+    mutate(
+      social_class = case_when(
+        d63 == 1 ~ "Working class",
+        d63 == 2 ~ "Lower middle class",
+        d63 == 3 ~ "Middle class",
+        d63 == 4 ~ "Upper middle class",
+        d63 == 5 ~ "Higher class",
+        d63 %in% c(6, 7, 8, 9) ~ "Other/DK/Refusal",
+        TRUE ~ NA_character_
+      ),
+      social_class = factor(social_class,
+                           levels = c("Working class", "Lower middle class", "Middle class", 
+                                     "Upper middle class", "Higher class", "Other/DK/Refusal")),
+      year = year,
+      country_name = factor(country_name)  # Convert to factor for alphabetical ordering
+    ) %>%
+    filter(!is.na(social_class)) %>%
+    group_by(country_name, social_class) %>%
+    summarise(n = n(), .groups = 'drop') %>%
+    group_by(country_name) %>%
+    mutate(
+      total = sum(n),
+      percentage = round(n / total * 100, 1)
+    ) %>%
+    ungroup()
+}
+
+# Prepare social class data for both years
+social_class_2017 <- prepare_social_class_data(analytical_2017, "2017")
+social_class_2024 <- prepare_social_class_data(analytical_2024, "2024")
+
+# Create color palette for social classes
+social_class_colors <- c(
+  "Working class" = "#d62728",
+  "Lower middle class" = "#ff7f0e",
+  "Middle class" = "#2ca02c", 
+  "Upper middle class" = "#1f77b4",
+  "Higher class" = "#9467bd",
+  "Other/DK/Refusal" = "#8c564b"
+)
+
+# Function to create social class distribution plot
+create_social_class_plot <- function(data, year, title_suffix) {
+  
+  # Calculate sample sizes for subtitle
+  sample_sizes <- data %>%
+    group_by(country_name) %>%
+    summarise(total_n = sum(n), .groups = 'drop') %>%
+    arrange(country_name)
+  
+  total_sample <- sum(sample_sizes$total_n)
+  n_countries <- nrow(sample_sizes)
+  
+  subtitle_text <- paste0("Analytical Sample: ", total_sample, " respondents across ", 
+                         n_countries, " countries")
+  
+  # Order countries alphabetically
+  data <- data %>%
+    mutate(country_name = factor(country_name, levels = sort(unique(country_name))))
+  
+  ggplot(data, aes(x = country_name, y = percentage, fill = social_class)) +
+    geom_bar(stat = "identity", color = "white", size = 0.2) +
+    scale_fill_manual(values = social_class_colors, name = "Social Class") +
+    coord_flip() +
+    scale_x_discrete(limits = rev(levels(data$country_name))) +  # Reverse for bottom-to-top alphabetical
+    labs(
+      title = paste0("Social Class Distribution by Country: ", title_suffix),
+      subtitle = subtitle_text,
+      x = "Country",
+      y = "Percentage (%)",
+      caption = "Note: Only includes respondents with complete data on all analytical variables"
+    ) +
+    theme_minimal(base_size = 10) +
+    theme(
+      plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
+      plot.subtitle = element_text(size = 11, hjust = 0.5, color = "gray40"),
+      plot.caption = element_text(size = 9, color = "gray50"),
+      axis.text.y = element_text(size = 8),
+      axis.text.x = element_text(size = 9),
+      axis.title = element_text(size = 11, face = "bold"),
+      legend.title = element_text(size = 10, face = "bold"),
+      legend.text = element_text(size = 9),
+      legend.position = "bottom",
+      legend.box = "horizontal",
+      panel.grid.major.y = element_blank(),
+      panel.grid.minor = element_blank(),
+      strip.text = element_text(size = 10, face = "bold")
+    ) +
+    guides(fill = guide_legend(nrow = 2, byrow = TRUE))
+}
+
+# Create plots for both years
+social_class_plot_2017 <- create_social_class_plot(social_class_2017, "2017", "Eurobarometer 87.1 (2017)")
+social_class_plot_2024 <- create_social_class_plot(social_class_2024, "2024", "Eurobarometer 101.4 (2024)")
+
+# Save the plots
+save_plot(social_class_plot_2017, "Social_Class_Distribution_2017", width = 14, height = 10)
+save_plot(social_class_plot_2024, "Social_Class_Distribution_2024", width = 14, height = 10)
+
+# Display the plots
+print(social_class_plot_2017)
+print(social_class_plot_2024)
+```
+
+```{r create_social_class_summary_tables}
+# Create summary tables for social class distribution
+
+# Function to create social class summary table
+create_social_class_summary <- function(data, year) {
+  # Overall distribution
+  overall_dist <- data %>%
+    group_by(social_class) %>%
+    summarise(
+      total_n = sum(n),
+      .groups = 'drop'
+    ) %>%
+    mutate(
+      overall_percentage = round(total_n / sum(total_n) * 100, 1)
+    ) %>%
+    arrange(desc(total_n))
+  
+  # Country-level statistics
+  country_stats <- data %>%
+    group_by(social_class) %>%
+    summarise(
+      mean_percentage = round(mean(percentage), 1),
+      sd_percentage = round(sd(percentage), 1),
+      min_percentage = round(min(percentage), 1),
+      max_percentage = round(max(percentage), 1),
+      .groups = 'drop'
+    )
+  
+  # Combine the tables
+  summary_table <- overall_dist %>%
+    left_join(country_stats, by = "social_class") %>%
+    select(social_class, total_n, overall_percentage, mean_percentage, 
+           sd_percentage, min_percentage, max_percentage)
+  
+  return(summary_table)
+}
+
+# Create summary tables
+social_class_summary_2017 <- create_social_class_summary(social_class_2017, "2017")
+social_class_summary_2024 <- create_social_class_summary(social_class_2024, "2024")
+
+# Create comparison table
+social_class_comparison <- social_class_summary_2017 %>%
+  select(social_class, total_n_2017 = total_n, overall_pct_2017 = overall_percentage) %>%
+  full_join(
+    social_class_summary_2024 %>%
+      select(social_class, total_n_2024 = total_n, overall_pct_2024 = overall_percentage),
+    by = "social_class"
+  ) %>%
+  mutate(
+    change_n = total_n_2024 - total_n_2017,
+    change_pct = overall_pct_2024 - overall_pct_2017
+  ) %>%
+  arrange(desc(overall_pct_2024))
+
+# Print summary tables
+cat("\\n=== SOCIAL CLASS DISTRIBUTION SUMMARY ===\\n")
+cat("\\n2017 Eurobarometer 87.1:\\n")
+print(kable(social_class_summary_2017, 
+            col.names = c("Social Class", "N", "Overall %", "Mean %", "SD %", "Min %", "Max %"),
+            caption = "Social Class Distribution Summary - 2017"))
+
+cat("\\n2024 Eurobarometer 101.4:\\n")
+print(kable(social_class_summary_2024,
+            col.names = c("Social Class", "N", "Overall %", "Mean %", "SD %", "Min %", "Max %"), 
+            caption = "Social Class Distribution Summary - 2024"))
+
+cat("\\nComparison 2017 vs 2024:\\n")
+print(kable(social_class_comparison,
+            col.names = c("Social Class", "N 2017", "% 2017", "N 2024", "% 2024", "Change N", "Change %"),
+            caption = "Social Class Distribution Comparison"))
+
+# Save tables as CSV
+save_table(social_class_summary_2017, "Social_Class_Summary_2017")
+save_table(social_class_summary_2024, "Social_Class_Summary_2024") 
+save_table(social_class_comparison, "Social_Class_Comparison_2017_vs_2024")
+
+# Save detailed country-level data
+save_table(social_class_2017, "Social_Class_by_Country_2017")
+save_table(social_class_2024, "Social_Class_by_Country_2024")
+```
+
+```{r create_social_class_heatmap}
+# Create heatmap to better visualize cross-country variation in social class
+
+# Function to create social class heatmap
+create_social_class_heatmap <- function(data, year, title_suffix) {
+  
+  # Prepare data for heatmap
+  heatmap_data <- data %>%
+    select(country_name, social_class, percentage) %>%
+    pivot_wider(names_from = social_class, values_from = percentage, values_fill = 0) %>%
+    pivot_longer(cols = -country_name, names_to = "social_class", values_to = "percentage") %>%
+    mutate(
+      social_class = factor(social_class, 
+                           levels = c("Working class", "Lower middle class", "Middle class", 
+                                     "Upper middle class", "Higher class", "Other/DK/Refusal")),
+      country_name = factor(country_name, levels = sort(unique(country_name)))
+    )
+  
+  ggplot(heatmap_data, aes(x = social_class, y = country_name, fill = percentage)) +
+    geom_tile(color = "white", size = 0.5) +
+    scale_fill_gradient2(low = "white", mid = "lightblue", high = "darkblue", 
+                        midpoint = 25, name = "Percentage\n(%)") +
+    labs(
+      title = paste0("Social Class Distribution Heatmap: ", title_suffix),
+      subtitle = "Color intensity indicates percentage within each country",
+      x = "Social Class",
+      y = "Country"
+    ) +
+    theme_minimal(base_size = 10) +
+    theme(
+      plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
+      plot.subtitle = element_text(size = 11, hjust = 0.5, color = "gray40"),
+      axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+      axis.text.y = element_text(size = 8),
+      axis.title = element_text(size = 11, face = "bold"),
+      legend.title = element_text(size = 10, face = "bold"),
+      panel.grid = element_blank()
+    ) +
+    geom_text(aes(label = paste0(percentage, "%")), 
+             size = 2.5, color = "black")  # Show all percentages
+}
+
+# Create heatmaps
+social_class_heatmap_2017 <- create_social_class_heatmap(social_class_2017, "2017", "Eurobarometer 87.1 (2017)")
+social_class_heatmap_2024 <- create_social_class_heatmap(social_class_2024, "2024", "Eurobarometer 101.4 (2024)")
+
+# Save heatmaps
+save_plot(social_class_heatmap_2017, "Social_Class_Heatmap_2017", width = 12, height = 10)
+save_plot(social_class_heatmap_2024, "Social_Class_Heatmap_2024", width = 12, height = 10)
+
+# Display heatmaps
+print(social_class_heatmap_2017)
+print(social_class_heatmap_2024)
+```
+
+```{r social_class_country_variation_analysis}
+# Analyze cross-country variation in social class distribution
+
+# Function to calculate coefficient of variation for each social class
+calculate_social_class_variation <- function(data, year) {
+  variation_stats <- data %>%
+    group_by(social_class) %>%
+    summarise(
+      mean_pct = mean(percentage),
+      sd_pct = sd(percentage),
+      cv = sd_pct / mean_pct,  # Coefficient of variation
+      min_pct = min(percentage),
+      max_pct = max(percentage),
+      range_pct = max_pct - min_pct,
+      .groups = 'drop'
+    ) %>%
+    mutate(year = year) %>%
+    arrange(desc(cv))
+  
+  return(variation_stats)
+}
+
+# Calculate variation statistics
+social_class_variation_2017 <- calculate_social_class_variation(social_class_2017, "2017")
+social_class_variation_2024 <- calculate_social_class_variation(social_class_2024, "2024")
+
+# Combine for comparison
+social_class_variation_comparison <- social_class_variation_2017 %>%
+  select(social_class, cv_2017 = cv, range_2017 = range_pct) %>%
+  full_join(
+    social_class_variation_2024 %>%
+      select(social_class, cv_2024 = cv, range_2024 = range_pct),
+    by = "social_class"
+  ) %>%
+  mutate(
+    cv_change = cv_2024 - cv_2017,
+    range_change = range_2024 - range_2017
+  ) %>%
+  arrange(desc(cv_2024))
+
+cat("\\n=== CROSS-COUNTRY VARIATION ANALYSIS - SOCIAL CLASS ===\\n")
+cat("\\nCoefficient of Variation (CV) indicates relative variability across countries\\n")
+cat("Higher CV = more variation between countries\\n\\n")
+
+print(kable(social_class_variation_comparison,
+            col.names = c("Social Class", "CV 2017", "Range 2017", "CV 2024", "Range 2024", "CV Change", "Range Change"),
+            digits = 3,
+            caption = "Cross-Country Variation in Social Class Distribution"))
+
+# Save variation analysis
+save_table(social_class_variation_2017, "Social_Class_Variation_2017")
+save_table(social_class_variation_2024, "Social_Class_Variation_2024")
+save_table(social_class_variation_comparison, "Social_Class_Variation_Comparison")
+
+# Identify countries with most extreme social class profiles
+extreme_social_class_profiles_2017 <- social_class_2017 %>%
+  group_by(country_name) %>%
+  summarise(
+    dominant_social_class = social_class[which.max(percentage)][1],
+    max_percentage = max(percentage),
+    .groups = 'drop'
+  ) %>%
+  arrange(desc(max_percentage))
+
+extreme_social_class_profiles_2024 <- social_class_2024 %>%
+  group_by(country_name) %>%
+  summarise(
+    dominant_social_class = social_class[which.max(percentage)][1],
+    max_percentage = max(percentage),
+    .groups = 'drop'
+  ) %>%
+  arrange(desc(max_percentage))
+
+cat("\\n=== COUNTRIES WITH MOST DOMINANT SOCIAL CLASS CATEGORIES ===\\n")
+cat("\\n2017:\\n")
+print(head(extreme_social_class_profiles_2017, 10))
+cat("\\n2024:\\n")  
+print(head(extreme_social_class_profiles_2024, 10))
+
+save_table(extreme_social_class_profiles_2017, "Extreme_Social_Class_Profiles_2017")
+save_table(extreme_social_class_profiles_2024, "Extreme_Social_Class_Profiles_2024")
+```
